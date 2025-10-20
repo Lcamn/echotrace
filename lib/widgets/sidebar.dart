@@ -182,7 +182,7 @@ class _SidebarState extends State<Sidebar> with SingleTickerProviderStateMixin {
                         // 版本号居中
                         Center(
                           child: Text(
-                            'v1.0.1',
+                            'v1.0.2',
                             style: Theme.of(context).textTheme.bodySmall?.copyWith(
                               color: Theme.of(context).colorScheme.onSurface.withOpacity(0.3),
                             ),
