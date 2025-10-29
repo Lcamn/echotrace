@@ -337,23 +337,52 @@ class _DataManagementPageState extends State<DataManagementPage> with SingleTick
         _derivedKey = await _deriveKeyOnce(key, pendingFiles.first.originalPath);
       }
 
-      
+
       // 步骤1：强制清理所有页面状态
       if (mounted) {
+        await logger.info('DataManagementPage', '步骤1: 导航到数据管理页面并清理其他页面');
         context.read<AppState>().setCurrentPage('data_management');
         await Future.delayed(const Duration(milliseconds: 1000));
       }
-      
+
       // 步骤2：多次关闭数据库连接
       if (mounted) {
+        await logger.info('DataManagementPage', '步骤2: 第1次关闭数据库连接');
         await context.read<AppState>().databaseService.close();
         await Future.delayed(const Duration(milliseconds: 1000));
+
+        await logger.info('DataManagementPage', '步骤2: 第2次关闭数据库连接');
         await context.read<AppState>().databaseService.close();
+        await logger.info('DataManagementPage', '所有数据库连接已关闭');
       }
-      
+
       // 步骤3：等待文件句柄释放
-      await Future.delayed(const Duration(milliseconds: 5000));
-      
+      await logger.info('DataManagementPage', '步骤3: 等待文件句柄完全释放（2秒）...');
+      await Future.delayed(const Duration(milliseconds: 2000));
+      await logger.info('DataManagementPage', '文件句柄释放完成');
+
+      // 步骤4：关闭当前进程中所有指向待解密文件的句柄
+      await logger.info('DataManagementPage', '步骤4: 关闭当前进程的 ${pendingFiles.length} 个数据库文件句柄...');
+      final goFfi = GoDecryptFFI();
+      int closedCount = 0;
+      for (final file in pendingFiles) {
+        try {
+          final error = goFfi.closeSelfFileHandles(file.originalPath);
+          if (error == null) {
+            closedCount++;
+            await logger.info('DataManagementPage', '成功关闭文件句柄: ${file.fileName}');
+          } else {
+            await logger.warning('DataManagementPage', '关闭文件句柄失败: ${file.fileName}, 错误: $error');
+          }
+        } catch (e) {
+          await logger.warning('DataManagementPage', '关闭文件句柄时出错: ${file.fileName}', e);
+        }
+      }
+      await logger.info('DataManagementPage', '文件句柄关闭完成，成功关闭 $closedCount/${pendingFiles.length} 个文件');
+
+      // 再等待一小段时间，确保文件句柄完全释放
+      await Future.delayed(const Duration(milliseconds: 500));
+      await logger.info('DataManagementPage', '开始全量解密');
 
       // -- 开始并行解密--
       if (mounted) {
@@ -624,10 +653,33 @@ class _DataManagementPageState extends State<DataManagementPage> with SingleTick
       
       // 步骤3：等待足够长的时间让操作系统释放所有文件句柄
       // Windows 系统需要更长时间，特别是有多个进程/Isolate时
-      await logger.info('DataManagementPage', '步骤3: 等待文件句柄完全释放（5秒）...');
-      await logger.warning('DataManagementPage', '如果有后台分析任务正在运行，文件可能仍被占用');
-      await Future.delayed(const Duration(milliseconds: 5000));
-      await logger.info('DataManagementPage', '文件句柄释放完成，开始增量更新');
+      await logger.info('DataManagementPage', '步骤3: 等待文件句柄完全释放（2秒）...');
+      await Future.delayed(const Duration(milliseconds: 2000));
+      await logger.info('DataManagementPage', '文件句柄释放完成');
+
+      // 步骤4：关闭当前进程中所有指向待更新文件的句柄
+      // 直接关闭当前进程（包括 sqflite_ffi 后台 Isolate）中的文件句柄
+      await logger.info('DataManagementPage', '步骤4: 关闭当前进程的 ${filesToUpdate.length} 个数据库文件句柄...');
+      final goFfi = GoDecryptFFI();
+      int closedCount = 0;
+      for (final file in filesToUpdate) {
+        try {
+          final error = goFfi.closeSelfFileHandles(file.originalPath);
+          if (error == null) {
+            closedCount++;
+            await logger.info('DataManagementPage', '成功关闭文件句柄: ${file.fileName}');
+          } else {
+            await logger.warning('DataManagementPage', '关闭文件句柄失败: ${file.fileName}, 错误: $error');
+          }
+        } catch (e) {
+          await logger.warning('DataManagementPage', '关闭文件句柄时出错: ${file.fileName}', e);
+        }
+      }
+      await logger.info('DataManagementPage', '文件句柄关闭完成，成功关闭 $closedCount/${filesToUpdate.length} 个文件');
+
+      // 再等待一小段时间，确保文件句柄完全释放
+      await Future.delayed(const Duration(milliseconds: 500));
+      await logger.info('DataManagementPage', '开始增量更新');
 
       // -- 开始串行更新 --
       for (final file in filesToUpdate) {

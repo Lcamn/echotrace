@@ -90,6 +90,7 @@ extern "C" {
 extern __declspec(dllexport) int ValidateKey(char* dbPath, char* hexKey);
 extern __declspec(dllexport) char* DecryptDatabase(char* inputPath, char* outputPath, char* hexKey);
 extern __declspec(dllexport) char* ForceUnlockFile(char* filePath);
+extern __declspec(dllexport) char* CloseSelfFileHandles(char* filePath);
 extern __declspec(dllexport) void FreeString(char* str);
 
 #ifdef __cplusplus

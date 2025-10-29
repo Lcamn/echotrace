@@ -27,38 +27,13 @@ class MessageBubble extends StatefulWidget {
   State<MessageBubble> createState() => _MessageBubbleState();
 }
 
-class _MessageBubbleState extends State<MessageBubble> with SingleTickerProviderStateMixin {
-  late AnimationController _controller;
-  late Animation<double> _opacityAnimation;
-  late Animation<Offset> _slideAnimation;
+class _MessageBubbleState extends State<MessageBubble> {
   String? _renderedPatMessage; // 渲染后的拍一拍消息
 
   @override
   void initState() {
     super.initState();
-    _controller = AnimationController(
-      duration: const Duration(milliseconds: 250),
-      vsync: this,
-    );
 
-    _opacityAnimation = Tween<double>(
-      begin: 0.0,
-      end: 1.0,
-    ).animate(CurvedAnimation(
-      parent: _controller,
-      curve: Curves.easeIn,
-    ));
-
-    _slideAnimation = Tween<Offset>(
-      begin: widget.isFromMe ? const Offset(0.1, 0) : const Offset(-0.1, 0),
-      end: Offset.zero,
-    ).animate(CurvedAnimation(
-      parent: _controller,
-      curve: Curves.easeOut,
-    ));
-
-    _controller.forward();
-    
     // 如果是拍一拍消息，异步查询wxid对应的真实姓名
     if (widget.message.localType == 266287972401 && widget.message.patInfo != null) {
       _loadPatMessageNames();
@@ -102,7 +77,6 @@ class _MessageBubbleState extends State<MessageBubble> with SingleTickerProvider
 
   @override
   void dispose() {
-    _controller.dispose();
     super.dispose();
   }
 
@@ -125,58 +99,52 @@ class _MessageBubbleState extends State<MessageBubble> with SingleTickerProvider
 
   @override
   Widget build(BuildContext context) {
-    return SlideTransition(
-      position: _slideAnimation,
-      child: FadeTransition(
-        opacity: _opacityAnimation,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(vertical: 4),
-          child: Column(
-            crossAxisAlignment: widget.isFromMe ? CrossAxisAlignment.end : CrossAxisAlignment.start,
-            children: [
-              // 时间分隔符（只在需要时显示）
-              if (widget.shouldShowTime)
-                Center(
-                  child: Container(
-                    margin: const EdgeInsets.symmetric(vertical: 12),
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                    decoration: BoxDecoration(
-                      color: Theme.of(context).colorScheme.surfaceVariant.withOpacity(0.5),
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: Text(
-                      _cleanString(widget.message.formattedCreateTime),
-                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
-                        fontSize: 10,
-                      ),
-                    ),
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Column(
+        crossAxisAlignment: widget.isFromMe ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+        children: [
+          // 时间分隔符（只在需要时显示）
+          if (widget.shouldShowTime)
+            Center(
+              child: Container(
+                margin: const EdgeInsets.symmetric(vertical: 12),
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                decoration: BoxDecoration(
+                  color: Theme.of(context).colorScheme.surfaceVariant.withOpacity(0.5),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Text(
+                  _cleanString(widget.message.formattedCreateTime),
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
+                    fontSize: 10,
                   ),
                 ),
-              
-              // 群聊中显示发送者名称（在消息气泡上方）
-              if (!widget.isFromMe && widget.senderDisplayName != null && widget.senderDisplayName!.isNotEmpty)
-                Padding(
-                  padding: const EdgeInsets.only(left: 44, bottom: 4), // 44 = 头像宽度(36) + 间距(8)
-                  child: SelectableText(
-                    _cleanString(widget.senderDisplayName!),
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: Theme.of(context).colorScheme.primary,
-                      fontSize: 11,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                ),
-          
-              // 消息内容
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisAlignment: widget.isFromMe ? MainAxisAlignment.end : MainAxisAlignment.start,
-                children: widget.isFromMe ? _buildFromMeLayout(context) : _buildFromOtherLayout(context),
               ),
-            ],
+            ),
+
+          // 群聊中显示发送者名称（在消息气泡上方）
+          if (!widget.isFromMe && widget.senderDisplayName != null && widget.senderDisplayName!.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(left: 44, bottom: 4), // 44 = 头像宽度(36) + 间距(8)
+              child: SelectableText(
+                _cleanString(widget.senderDisplayName!),
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: Theme.of(context).colorScheme.primary,
+                  fontSize: 11,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+
+          // 消息内容
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisAlignment: widget.isFromMe ? MainAxisAlignment.end : MainAxisAlignment.start,
+            children: widget.isFromMe ? _buildFromMeLayout(context) : _buildFromOtherLayout(context),
           ),
-        ),
+        ],
       ),
     );
   }

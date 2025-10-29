@@ -15,9 +15,14 @@ class ChatExportService {
   /// 导出聊天记录为 JSON 格式
   Future<bool> exportToJson(ChatSession session, List<Message> messages, {String? filePath}) async {
     try {
+      // 获取联系人详细信息
+      final contactInfo = await _getContactInfo(session.username);
+
       final data = {
         'session': {
-          'username': session.username,
+          'wxid': session.username,
+          'nickname': contactInfo['nickname'] ?? session.displayName ?? session.username,
+          'remark': contactInfo['remark'] ?? '',
           'displayName': session.displayName ?? session.username,
           'type': session.typeDescription,
           'lastTimestamp': session.lastTimestamp,
@@ -36,9 +41,9 @@ class ChatExportService {
         }).toList(),
         'exportTime': DateTime.now().toIso8601String(),
       };
-      
+
       final jsonString = const JsonEncoder.withIndent('  ').convert(data);
-      
+
       if (filePath == null) {
         final suggestedName = '${session.displayName ?? session.username}_聊天记录_${DateTime.now().millisecondsSinceEpoch}.json';
         final outputFile = await FilePicker.platform.saveFile(
@@ -48,8 +53,13 @@ class ChatExportService {
         if (outputFile == null) return false;
         filePath = outputFile;
       }
-      
+
       final file = File(filePath);
+      // 确保父目录存在
+      final parentDir = file.parent;
+      if (!await parentDir.exists()) {
+        await parentDir.create(recursive: true);
+      }
       await file.writeAsString(jsonString);
       return true;
     } catch (e) {
@@ -60,21 +70,24 @@ class ChatExportService {
   /// 导出聊天记录为 HTML 格式
   Future<bool> exportToHtml(ChatSession session, List<Message> messages, {String? filePath}) async {
     try {
+      // 获取联系人详细信息
+      final contactInfo = await _getContactInfo(session.username);
+
       // 获取所有发送者的显示名称
       final senderUsernames = messages
           .where((m) => m.senderUsername != null && m.senderUsername!.isNotEmpty)
           .map((m) => m.senderUsername!)
           .toSet()
           .toList();
-      
+
       final senderDisplayNames = senderUsernames.isNotEmpty
           ? await _databaseService.getDisplayNames(senderUsernames)
           : <String, String>{};
-      
+
       final myWxid = _databaseService.currentAccountWxid ?? '';
-      
-      final html = _generateHtml(session, messages, senderDisplayNames, myWxid);
-      
+
+      final html = _generateHtml(session, messages, senderDisplayNames, myWxid, contactInfo);
+
       if (filePath == null) {
         final suggestedName = '${session.displayName ?? session.username}_聊天记录_${DateTime.now().millisecondsSinceEpoch}.html';
         final outputFile = await FilePicker.platform.saveFile(
@@ -84,8 +97,13 @@ class ChatExportService {
         if (outputFile == null) return false;
         filePath = outputFile;
       }
-      
+
       final file = File(filePath);
+      // 确保父目录存在
+      final parentDir = file.parent;
+      if (!await parentDir.exists()) {
+        await parentDir.create(recursive: true);
+      }
       await file.writeAsString(html);
       return true;
     } catch (e) {
@@ -96,61 +114,127 @@ class ChatExportService {
   /// 导出聊天记录为 Excel 格式
   Future<bool> exportToExcel(ChatSession session, List<Message> messages, {String? filePath}) async {
     try {
+      // 获取联系人详细信息
+      final contactInfo = await _getContactInfo(session.username);
+
       final excel = Excel.createExcel();
       final defaultSheet = excel.getDefaultSheet();
       if (defaultSheet != null) {
         excel.rename(defaultSheet, '聊天记录');
       }
       final sheet = excel['聊天记录'];
-      
+
+      // 添加会话信息行
+      sheet.appendRow([
+        TextCellValue('会话信息'),
+        TextCellValue(''),
+        TextCellValue(''),
+        TextCellValue(''),
+        TextCellValue(''),
+        TextCellValue(''),
+        TextCellValue(''),
+        TextCellValue(''),
+      ]);
+      sheet.appendRow([
+        TextCellValue('微信ID'),
+        TextCellValue(session.username),
+        TextCellValue('昵称'),
+        TextCellValue(contactInfo['nickname'] ?? ''),
+        TextCellValue('备注'),
+        TextCellValue(contactInfo['remark'] ?? ''),
+        TextCellValue(''),
+        TextCellValue(''),
+      ]);
+      sheet.appendRow([
+        TextCellValue(''),
+        TextCellValue(''),
+        TextCellValue(''),
+        TextCellValue(''),
+        TextCellValue(''),
+        TextCellValue(''),
+        TextCellValue(''),
+        TextCellValue(''),
+      ]);
+
       // 设置表头
       sheet.appendRow([
         TextCellValue('序号'),
         TextCellValue('时间'),
         TextCellValue('发送者'),
+        TextCellValue('发送者微信ID'),
+        TextCellValue('发送者昵称'),
+        TextCellValue('发送者备注'),
         TextCellValue('消息类型'),
         TextCellValue('内容'),
       ]);
-      
+
       // 获取所有发送者的显示名称
       final senderUsernames = messages
           .where((m) => m.senderUsername != null && m.senderUsername!.isNotEmpty)
           .map((m) => m.senderUsername!)
           .toSet()
           .toList();
-      
+
       final senderDisplayNames = senderUsernames.isNotEmpty
           ? await _databaseService.getDisplayNames(senderUsernames)
           : <String, String>{};
-      
+
+      // 获取所有发送者的详细信息（nickname、remark）
+      final senderContactInfos = <String, Map<String, String>>{};
+      for (final username in senderUsernames) {
+        senderContactInfos[username] = await _getContactInfo(username);
+      }
+
       // 添加数据行
       for (int i = 0; i < messages.length; i++) {
         final msg = messages[i];
-        
-        // 确定发送者
-        String sender;
+
+        // 确定发送者信息
+        String senderDisplayName;
+        String senderWxid;
+        String senderNickname;
+        String senderRemark;
+
         if (msg.isSend == 1) {
-          sender = '我';
+          senderDisplayName = '我';
+          senderWxid = _databaseService.currentAccountWxid ?? '';
+          senderNickname = '';
+          senderRemark = '';
         } else if (session.isGroup && msg.senderUsername != null) {
-          sender = senderDisplayNames[msg.senderUsername] ?? '群成员';
+          senderDisplayName = senderDisplayNames[msg.senderUsername] ?? '群成员';
+          senderWxid = msg.senderUsername ?? '';
+          final info = senderContactInfos[msg.senderUsername] ?? {};
+          senderNickname = info['nickname'] ?? '';
+          senderRemark = info['remark'] ?? '';
         } else {
-          sender = session.displayName ?? session.username;
+          senderDisplayName = session.displayName ?? session.username;
+          senderWxid = session.username;
+          senderNickname = contactInfo['nickname'] ?? '';
+          senderRemark = contactInfo['remark'] ?? '';
         }
-        
+
         sheet.appendRow([
           IntCellValue(i + 1),
           TextCellValue(msg.formattedCreateTime),
-          TextCellValue(sender),
+          TextCellValue(senderDisplayName),
+          TextCellValue(senderWxid),
+          TextCellValue(senderNickname),
+          TextCellValue(senderRemark),
           TextCellValue(msg.typeDescription),
           TextCellValue(msg.displayContent),
         ]);
       }
-      
+
       // 自动调整列宽
-      for (int col = 0; col < 5; col++) {
-        sheet.setColumnWidth(col, 20);
-      }
-      
+      sheet.setColumnWidth(0, 8);   // 序号
+      sheet.setColumnWidth(1, 20);  // 时间
+      sheet.setColumnWidth(2, 15);  // 发送者
+      sheet.setColumnWidth(3, 25);  // 发送者微信ID
+      sheet.setColumnWidth(4, 15);  // 发送者昵称
+      sheet.setColumnWidth(5, 15);  // 发送者备注
+      sheet.setColumnWidth(6, 12);  // 消息类型
+      sheet.setColumnWidth(7, 50);  // 内容
+
       if (filePath == null) {
         final suggestedName = '${session.displayName ?? session.username}_聊天记录_${DateTime.now().millisecondsSinceEpoch}.xlsx';
         final outputFile = await FilePicker.platform.saveFile(
@@ -160,14 +244,19 @@ class ChatExportService {
         if (outputFile == null) return false;
         filePath = outputFile;
       }
-      
+
       final bytes = excel.encode();
       if (bytes != null) {
         final file = File(filePath);
+        // 确保父目录存在
+        final parentDir = file.parent;
+        if (!await parentDir.exists()) {
+          await parentDir.create(recursive: true);
+        }
         await file.writeAsBytes(bytes);
         return true;
       }
-      
+
       return false;
     } catch (e) {
       return false;
@@ -175,21 +264,21 @@ class ChatExportService {
   }
   
   /// 生成 HTML 内容
-  String _generateHtml(ChatSession session, List<Message> messages, Map<String, String> senderDisplayNames, String myWxid) {
+  String _generateHtml(ChatSession session, List<Message> messages, Map<String, String> senderDisplayNames, String myWxid, Map<String, String> contactInfo) {
     final buffer = StringBuffer();
-    
+
     // 构建消息数据
     final messagesData = messages.map((msg) {
       final msgDate = DateTime.fromMillisecondsSinceEpoch(msg.createTime * 1000);
       final isSend = msg.isSend == 1;
-      
+
       String senderName = '';
       if (!isSend && session.isGroup && msg.senderUsername != null) {
         senderName = senderDisplayNames[msg.senderUsername] ?? '群成员';
       } else if (!isSend) {
         senderName = session.displayName ?? session.username;
       }
-      
+
       return {
         'date': '${msgDate.year}-${msgDate.month.toString().padLeft(2, '0')}-${msgDate.day.toString().padLeft(2, '0')}',
         'time': '${msgDate.hour.toString().padLeft(2, '0')}:${msgDate.minute.toString().padLeft(2, '0')}:${msgDate.second.toString().padLeft(2, '0')}',
@@ -199,7 +288,7 @@ class ChatExportService {
         'timestamp': msg.createTime,
       };
     }).toList();
-    
+
     buffer.writeln('<!DOCTYPE html>');
     buffer.writeln('<html lang="zh-CN">');
     buffer.writeln('<head>');
@@ -213,7 +302,51 @@ class ChatExportService {
     buffer.writeln('<body>');
     buffer.writeln('  <div class="container">');
     buffer.writeln('    <div class="header">');
-    buffer.writeln('      <h1>${_escapeHtml(session.displayName ?? session.username)}</h1>');
+    buffer.writeln('      <div class="header-main">');
+    buffer.writeln('        <h1>${_escapeHtml(session.displayName ?? session.username)}</h1>');
+
+    // 添加详细信息菜单按钮
+    final nickname = contactInfo['nickname'] ?? '';
+    final remark = contactInfo['remark'] ?? '';
+    final hasDetails = nickname.isNotEmpty || remark.isNotEmpty || session.username.isNotEmpty;
+
+    if (hasDetails) {
+      buffer.writeln('        <button class="info-menu-btn" onclick="toggleInfoMenu()" title="查看详细信息">');
+      buffer.writeln('          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">');
+      buffer.writeln('            <circle cx="12" cy="12" r="1"></circle>');
+      buffer.writeln('            <circle cx="12" cy="5" r="1"></circle>');
+      buffer.writeln('            <circle cx="12" cy="19" r="1"></circle>');
+      buffer.writeln('          </svg>');
+      buffer.writeln('        </button>');
+      buffer.writeln('      </div>');
+
+      // 详细信息下拉菜单
+      buffer.writeln('      <div class="info-menu" id="info-menu">');
+      buffer.writeln('        <div class="info-menu-content">');
+      if (session.username.isNotEmpty) {
+        buffer.writeln('          <div class="info-item">');
+        buffer.writeln('            <span class="info-label">微信ID</span>');
+        buffer.writeln('            <span class="info-value">${_escapeHtml(session.username)}</span>');
+        buffer.writeln('          </div>');
+      }
+      if (nickname.isNotEmpty) {
+        buffer.writeln('          <div class="info-item">');
+        buffer.writeln('            <span class="info-label">昵称</span>');
+        buffer.writeln('            <span class="info-value">${_escapeHtml(nickname)}</span>');
+        buffer.writeln('          </div>');
+      }
+      if (remark.isNotEmpty) {
+        buffer.writeln('          <div class="info-item">');
+        buffer.writeln('            <span class="info-label">备注</span>');
+        buffer.writeln('            <span class="info-value">${_escapeHtml(remark)}</span>');
+        buffer.writeln('          </div>');
+      }
+      buffer.writeln('        </div>');
+      buffer.writeln('      </div>');
+    } else {
+      buffer.writeln('      </div>');
+    }
+
     buffer.writeln('      <div class="info">');
     buffer.writeln('        <span>${session.typeDescription}</span>');
     buffer.writeln('        <span>共 ${messages.length} 条消息</span>');
@@ -351,6 +484,21 @@ class ChatExportService {
     buffer.writeln('      messagesContainer.scrollTo({ top: messagesContainer.scrollHeight, behavior: "smooth" });');
     buffer.writeln('    });');
     buffer.writeln('    ');
+    buffer.writeln('    // 详细信息菜单控制');
+    buffer.writeln('    function toggleInfoMenu() {');
+    buffer.writeln('      const menu = document.getElementById("info-menu");');
+    buffer.writeln('      menu.classList.toggle("show");');
+    buffer.writeln('    }');
+    buffer.writeln('    ');
+    buffer.writeln('    // 点击外部关闭菜单');
+    buffer.writeln('    document.addEventListener("click", (e) => {');
+    buffer.writeln('      const menu = document.getElementById("info-menu");');
+    buffer.writeln('      const btn = document.querySelector(".info-menu-btn");');
+    buffer.writeln('      if (menu && btn && !menu.contains(e.target) && !btn.contains(e.target)) {');
+    buffer.writeln('        menu.classList.remove("show");');
+    buffer.writeln('      }');
+    buffer.writeln('    });');
+    buffer.writeln('    ');
     buffer.writeln('    // 初始加载');
     buffer.writeln('    window.addEventListener("DOMContentLoaded", () => {');
     buffer.writeln('      loadInitialMessages();');
@@ -423,13 +571,103 @@ class ChatExportService {
         filter: blur(30px);
       }
       
+      .header-main {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 12px;
+        position: relative;
+        z-index: 1;
+        margin-bottom: 12px;
+      }
+
       .header h1 {
         font-size: 26px;
         font-weight: 600;
-        margin-bottom: 12px;
         letter-spacing: 0.5px;
-        position: relative;
-        z-index: 1;
+        margin: 0;
+      }
+
+      .info-menu-btn {
+        background: rgba(255, 255, 255, 0.2);
+        border: none;
+        border-radius: 50%;
+        width: 36px;
+        height: 36px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+        transition: all 0.3s ease;
+        color: white;
+        backdrop-filter: blur(10px);
+      }
+
+      .info-menu-btn:hover {
+        background: rgba(255, 255, 255, 0.3);
+        transform: scale(1.05);
+      }
+
+      .info-menu-btn:active {
+        transform: scale(0.95);
+      }
+
+      .info-menu {
+        position: absolute;
+        top: 100%;
+        right: 20px;
+        margin-top: 8px;
+        background: white;
+        border-radius: 12px;
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
+        opacity: 0;
+        visibility: hidden;
+        transform: translateY(-10px);
+        transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        z-index: 1000;
+        min-width: 280px;
+      }
+
+      .info-menu.show {
+        opacity: 1;
+        visibility: visible;
+        transform: translateY(0);
+      }
+
+      .info-menu-content {
+        padding: 16px;
+      }
+
+      .info-item {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 12px;
+        border-radius: 8px;
+        transition: background 0.2s ease;
+      }
+
+      .info-item:hover {
+        background: rgba(7, 193, 96, 0.05);
+      }
+
+      .info-item:not(:last-child) {
+        border-bottom: 1px solid rgba(0, 0, 0, 0.05);
+      }
+
+      .info-label {
+        font-size: 13px;
+        font-weight: 600;
+        color: #666;
+        margin-right: 16px;
+      }
+
+      .info-value {
+        font-size: 14px;
+        color: #333;
+        font-weight: 500;
+        text-align: right;
+        word-break: break-all;
       }
       
       .header .info {
@@ -468,7 +706,7 @@ class ChatExportService {
         border-radius: 50%;
         opacity: 0.8;
       }
-      
+
       .messages {
         background: white;
         padding: 28px 24px;
@@ -777,6 +1015,24 @@ class ChatExportService {
         .replaceAll('>', '&gt;')
         .replaceAll('"', '&quot;')
         .replaceAll("'", '&#39;');
+  }
+
+  /// 获取联系人详细信息（nickname、remark）
+  Future<Map<String, String>> _getContactInfo(String username) async {
+    final result = <String, String>{};
+
+    try {
+      final contact = await _databaseService.getContact(username);
+      if (contact != null) {
+        result['nickname'] = contact.nickName;
+        result['remark'] = contact.remark;
+        result['alias'] = contact.alias;
+      }
+    } catch (e) {
+      // 获取失败时返回空map
+    }
+
+    return result;
   }
 }
 

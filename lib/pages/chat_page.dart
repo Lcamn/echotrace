@@ -6,6 +6,7 @@ import '../models/message.dart';
 import '../widgets/chat_session_item.dart';
 import '../widgets/message_bubble.dart';
 import '../widgets/message_loading_shimmer.dart';
+import '../widgets/common/shimmer_loading.dart';
 import '../utils/string_utils.dart';
 import '../services/logger_service.dart';
 
@@ -119,6 +120,9 @@ class _ChatPageState extends State<ChatPage> with TickerProviderStateMixin {
   }
 
   Future<void> _loadSessions() async {
+    // 防止重复加载
+    if (_isLoadingSessions) return;
+
     setState(() {
       _isLoadingSessions = true;
     });
@@ -128,10 +132,9 @@ class _ChatPageState extends State<ChatPage> with TickerProviderStateMixin {
 
     try {
       final appState = context.read<AppState>();
-      
+
       // 检查数据库是否已连接
       if (!appState.databaseService.isConnected) {
-        await logger.error('ChatPage', '数据库未连接，无法加载会话列表');
         if (mounted) {
           setState(() {
             _isLoadingSessions = false;
@@ -142,14 +145,10 @@ class _ChatPageState extends State<ChatPage> with TickerProviderStateMixin {
         return; // 数据库未连接，不显示错误，由UI显示提示
       }
 
-      await logger.info('ChatPage', '开始加载会话列表，数据库模式: ${appState.databaseService.mode.name}');
-      await logger.info('ChatPage', '数据库路径: ${appState.databaseService.dbPath}');
-      
+      // 异步加载会话列表
       final sessions = await appState.databaseService.getSessions();
-      
-      await logger.info('ChatPage', '从数据库获取到 ${sessions.length} 个会话');
-      
-      // 过滤掉公众号/服务号（gh_ 开头）和其他非聊天会话
+
+      // 在后台线程过滤会话（避免阻塞 UI）
       final filteredSessions = sessions.where((session) {
         // 排除公众号/服务号
         if (session.username.startsWith('gh_')) return false;
@@ -162,12 +161,7 @@ class _ChatPageState extends State<ChatPage> with TickerProviderStateMixin {
         // 只保留个人聊天(wxid_)和群聊(@chatroom)
         return session.username.contains('wxid_') || session.username.contains('@chatroom');
       }).toList();
-      
-      await logger.info('ChatPage', '过滤后剩余 ${filteredSessions.length} 个会话');
-      if (filteredSessions.isNotEmpty) {
-        await logger.info('ChatPage', '前5个会话: ${filteredSessions.take(5).map((s) => '${s.username} (${s.displayName ?? "无显示名"})').join(", ")}');
-      }
-      
+
       if (mounted) {
         setState(() {
           _sessions = filteredSessions;
@@ -549,7 +543,14 @@ class _ChatPageState extends State<ChatPage> with TickerProviderStateMixin {
                     }
                     
                     return _isLoadingSessions
-                        ? const Center(child: CircularProgressIndicator())
+                        ? ShimmerLoading(
+                            isLoading: true,
+                            child: ListView.builder(
+                              itemCount: 6,
+                              physics: const NeverScrollableScrollPhysics(),
+                              itemBuilder: (context, index) => const ListItemShimmer(),
+                            ),
+                          )
                         : _filteredSessions.isEmpty
                             ? Center(
                                 child: Column(
@@ -590,25 +591,7 @@ class _ChatPageState extends State<ChatPage> with TickerProviderStateMixin {
         // 右侧消息列表
         Expanded(
           child: _selectedSession == null
-              ? Center(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(
-                        Icons.chat,
-                        size: 80,
-                        color: Theme.of(context).colorScheme.outline.withOpacity(0.5),
-                      ),
-                      const SizedBox(height: 16),
-                      Text(
-                        '选择一个会话开始查看',
-                        style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                          color: Theme.of(context).colorScheme.onSurface.withOpacity(0.5),
-                        ),
-                      ),
-                    ],
-                  ),
-                )
+              ? const SizedBox.shrink()
               : Column(
                   children: [
                     // 消息列表头部

@@ -93,6 +93,18 @@ func ForceUnlockFile(filePath *C.char) *C.char {
 	return nil // nil 表示成功
 }
 
+//export CloseSelfFileHandles
+func CloseSelfFileHandles(filePath *C.char) *C.char {
+	goFilePath := C.GoString(filePath)
+
+	err := unlock.CloseSelfFileHandles(goFilePath)
+	if err != nil {
+		return C.CString(err.Error())
+	}
+
+	return nil // nil 表示成功
+}
+
 //export FreeString
 func FreeString(str *C.char) {
 	C.free(unsafe.Pointer(str))

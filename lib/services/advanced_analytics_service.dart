@@ -348,7 +348,7 @@ class AdvancedAnalyticsService {
     };
   }
 
-  /// 深夜密友 - 优化版（使用数据库直接统计，避免加载所有消息）
+  /// 深夜密友
   Future<Map<String, dynamic>> findMidnightChatKing() async {
     final sessions = await _databaseService.getSessions();
     final privateSessions = sessions
@@ -755,6 +755,7 @@ class AdvancedAnalyticsService {
 
     for (final session in privateSessions) {
       try {
+        // 使用的 SQL 查询方法
         final messagesByDate = await _databaseService.getSessionMessagesByDate(
           session.username,
           filterYear: _filterYear,

@@ -72,7 +72,7 @@ class FormerFriendAnalyzer {
     _filterYear = year;
   }
 
-  /// 查找数据库中最新的消息日期（优化版：直接查询MAX(create_time)）
+  /// 查找数据库中最新的消息日期（直接查询MAX(create_time)）
   Future<DateTime?> _findLatestMessageDate() async {
     return await _databaseService.getLatestMessageDate();
   }

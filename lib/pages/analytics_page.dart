@@ -5,6 +5,7 @@ import '../services/database_service.dart';
 import '../services/analytics_cache_service.dart';
 import '../services/logger_service.dart';
 import '../models/analytics_data.dart';
+import '../widgets/common/shimmer_loading.dart';
 import 'annual_report_display_page.dart';
 
 /// 数据分析页面

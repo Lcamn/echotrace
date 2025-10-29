@@ -48,16 +48,37 @@ class HomePage extends StatelessWidget {
                     
                     // 使用动画切换器实现平滑的页面过渡效果
                     return AnimatedSwitcher(
-                      duration: const Duration(milliseconds: 300),
-                      switchInCurve: Curves.easeInOut,
-                      switchOutCurve: Curves.easeInOut,
+                      duration: const Duration(milliseconds: 400),
+                      switchInCurve: Curves.easeOutCubic,
+                      switchOutCurve: Curves.easeInCubic,
                       transitionBuilder: (Widget child, Animation<double> animation) {
-                        // 创建淡入淡出结合缩放的过渡动画
+                        // 创建淡入淡出结合滑动和缩放的过渡动画
                         return FadeTransition(
-                          opacity: animation,
-                          child: ScaleTransition(
-                            scale: Tween<double>(begin: 0.95, end: 1.0).animate(animation),
-                            child: child,
+                          opacity: Tween<double>(begin: 0.0, end: 1.0).animate(
+                            CurvedAnimation(
+                              parent: animation,
+                              curve: const Interval(0.0, 1.0, curve: Curves.easeOut),
+                            ),
+                          ),
+                          child: SlideTransition(
+                            position: Tween<Offset>(
+                              begin: const Offset(0.02, 0),
+                              end: Offset.zero,
+                            ).animate(
+                              CurvedAnimation(
+                                parent: animation,
+                                curve: const Interval(0.0, 1.0, curve: Curves.easeOutCubic),
+                              ),
+                            ),
+                            child: ScaleTransition(
+                              scale: Tween<double>(begin: 0.98, end: 1.0).animate(
+                                CurvedAnimation(
+                                  parent: animation,
+                                  curve: const Interval(0.0, 1.0, curve: Curves.easeOutCubic),
+                                ),
+                              ),
+                              child: child,
+                            ),
                           ),
                         );
                       },

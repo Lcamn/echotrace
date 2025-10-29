@@ -6,6 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../providers/app_state.dart';
 import '../models/chat_session.dart';
 import '../services/chat_export_service.dart';
+import '../widgets/common/shimmer_loading.dart';
 import '../utils/string_utils.dart';
 
 /// 聊天记录导出页面
@@ -424,7 +425,14 @@ class _ChatExportPageState extends State<ChatExportPage> {
         }
         
         if (_isLoadingSessions) {
-          return const Center(child: CircularProgressIndicator());
+          return ShimmerLoading(
+            isLoading: true,
+            child: ListView.builder(
+              itemCount: 6,
+              physics: const NeverScrollableScrollPhysics(),
+              itemBuilder: (context, index) => const ListItemShimmer(),
+            ),
+          );
         }
 
         final sessions = _filteredSessions;

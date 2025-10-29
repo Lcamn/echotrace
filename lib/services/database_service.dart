@@ -20,19 +20,19 @@ enum DatabaseMode {
 class DatabaseService {
   // 数据库模式
   DatabaseMode _mode = DatabaseMode.decrypted;
-  
+
   // 独立的数据库连接：会话/联系人 和 消息
   static Database? _sessionDb;
   static Database? _messageDb;
-  
+
   // 当前会话库路径与账号 wxid
   static String? _sessionDbPath;
   static String? _messageDbPath;
   String? _currentAccountWxid;
-  
+
   // 数据库工厂（用于 Isolate 中避免全局修改）
   DatabaseFactory? _dbFactory;
-  
+
   // 缓存的消息数据库连接
   final Map<String, Database> _cachedMessageDbs = {};
   DateTime? _cacheLastUsed;
@@ -1554,35 +1554,49 @@ class DatabaseService {
 
   /// 关闭数据库连接
   Future<void> close() async {
-    
+    await logger.info('DatabaseService', '开始关闭数据库连接...');
+
     // 先清理缓存的数据库连接
     await clearDatabaseCache();
-    
+    await logger.info('DatabaseService', '已清理缓存的数据库连接');
+
     // 如果是实时模式，需要清理VFS资源
     if (_mode == DatabaseMode.realtime && _sessionDbPath != null && _sessionDb != null) {
       try {
+        await logger.info('DatabaseService', '关闭实时加密数据库: $_sessionDbPath');
         await WeChatVFSNative.closeEncryptedDatabase(_sessionDb!, _sessionDbPath!);
+        await logger.info('DatabaseService', '实时加密数据库已关闭');
       } catch (e) {
+        await logger.warning('DatabaseService', '关闭实时加密数据库时出错（可忽略）', e);
       }
       _sessionDb = null;
     } else if (_sessionDb != null) {
       try {
+        await logger.info('DatabaseService', '关闭会话数据库: $_sessionDbPath');
         await _sessionDb!.close();
+        await logger.info('DatabaseService', '会话数据库已关闭');
       } catch (e) {
+        await logger.warning('DatabaseService', '关闭会话数据库时出错（可忽略）', e);
       }
       _sessionDb = null;
     }
-    
+
     if (_messageDb != null) {
       try {
+        await logger.info('DatabaseService', '关闭消息数据库: $_messageDbPath');
         await _messageDb!.close();
+        await logger.info('DatabaseService', '消息数据库已关闭');
       } catch (e) {
+        await logger.warning('DatabaseService', '关闭消息数据库时出错（可忽略）', e);
       }
       _messageDb = null;
     }
-    
-    // 强制触发垃圾回收，帮助释放文件句柄
-    await Future.delayed(const Duration(milliseconds: 100));
+
+    // 等待更长时间，确保 sqflite_ffi 的后台 Isolate 完全释放文件句柄
+    // Windows 系统需要更长的时间来释放文件句柄
+    await logger.info('DatabaseService', '等待文件句柄释放...');
+    await Future.delayed(const Duration(milliseconds: 500));
+    await logger.info('DatabaseService', '数据库连接已完全关闭');
   }
 
   /// 检查数据库是否已连接
@@ -1729,10 +1743,13 @@ class DatabaseService {
           // 部分用户未找到显示名
         }
 
-        await contactDb.close();
         return result;
       } finally {
-        await contactDb.close();
+        try {
+          await contactDb.close();
+        } catch (e) {
+          // 忽略关闭错误
+        }
       }
     } catch (e) {
       return {};
@@ -3016,7 +3033,7 @@ class DatabaseService {
     }
   }
 
-  /// 批量获取所有私聊会话的消息日期列表（优化版：减少查询次数）
+  /// 批量获取所有私聊会话的消息日期列表
   /// 返回格式：{username: [date1, date2, ...]}
   Future<Map<String, Set<String>>> getAllPrivateSessionsMessageDates({
     int? filterYear,
@@ -3219,17 +3236,17 @@ class DatabaseService {
       final privateSessions = sessions.where((s) => !s.isGroup).toList();
       await log('找到 ${privateSessions.length} 个私聊会话', level: 'info');
 
-      // 优化1：批量获取显示名称
+      // 批量获取显示名称
       final displayNames = await getDisplayNames(privateSessions.map((s) => s.username).toList());
 
       final results = <Map<String, dynamic>>[];
       int processedCount = 0;
       int hasDataCount = 0;
 
-      // 优化2：缓存所有数据库，避免重复获取
+      // 缓存所有数据库，避免重复获取
       final cachedDbs = await _getCachedMessageDatabases();
 
-      // 优化3：预先查询当前用户的 rowid（所有数据库共享同一个 Name2Id 表）
+      // 预先查询当前用户的 rowid（所有数据库共享同一个 Name2Id 表）
       int? myRowId;
       if (cachedDbs.isNotEmpty) {
         try {
@@ -3261,7 +3278,7 @@ class DatabaseService {
         onProgress?.call(idx + 1, privateSessions.length, displayName);
 
         try {
-          // 优化4：使用已缓存的数据库列表
+          // 使用已缓存的数据库列表
           final dbInfos = <_DatabaseTableInfo>[];
           for (final dbInfo in cachedDbs) {
             try {
@@ -3290,7 +3307,7 @@ class DatabaseService {
 
           final responseTimes = <double>[];
 
-          // 优化5：构建年份过滤条件（只构建一次）
+          // 构建年份过滤条件（只构建一次）
           String whereClause = '';
           List<dynamic> queryParams = [myRowId];
           if (year != null) {
@@ -3300,7 +3317,7 @@ class DatabaseService {
           }
 
           for (final dbInfo in dbInfos) {
-            // 优化6：简化查询，只获取必要字段
+            // 简化查询，只获取必要字段
             final query = '''
               SELECT
                 create_time,
@@ -3312,10 +3329,10 @@ class DatabaseService {
 
             final rows = await dbInfo.database.rawQuery(query, queryParams);
 
-            // 优化7：减少日志输出，只在有数据时输出
+            // 减少日志输出，只在有数据时输出
             if (rows.isEmpty) continue;
 
-            // 优化8：直接在查询结果上处理，避免额外的循环
+            // 直接在查询结果上处理，避免额外的循环
             // 在内存中快速处理相邻消息
             for (int i = 0; i < rows.length - 1; i++) {
               final current = rows[i];
@@ -3342,9 +3359,9 @@ class DatabaseService {
             }
           }
 
-          // 优化9：只处理有数据的会话
+          // 只处理有数据的会话
           if (responseTimes.isNotEmpty) {
-            // 优化10：使用更高效的算法计算统计值
+            // 使用更高效的算法计算统计值
             double sum = 0;
             double fastest = responseTimes[0];
             double slowest = responseTimes[0];
@@ -3371,7 +3388,7 @@ class DatabaseService {
 
           processedCount++;
         } catch (e) {
-          // 优化11：减少错误日志，只在调试模式下输出
+          // 减少错误日志，只在调试模式下输出
           continue;
         }
       }
@@ -3383,7 +3400,7 @@ class DatabaseService {
       await log('========== 响应速度分析完成 ==========', level: 'info');
       await log('处理: $processedCount 个会话, 有数据: $hasDataCount 个, 结果: ${results.length} 个', level: 'info');
 
-      // 优化12：只在有结果时输出详细信息
+      // 只在有结果时输出详细信息
       if (results.isNotEmpty && results.length <= 5) {
         await log('前${results.length}名结果:', level: 'info');
         for (int i = 0; i < results.length; i++) {

@@ -8,6 +8,7 @@ class GoDecryptFFI {
   late _ValidateKeyNative _validateKey;
   late _DecryptDatabaseNative _decryptDatabase;
   late _ForceUnlockFileNative _forceUnlockFile;
+  late _CloseSelfFileHandlesNative _closeSelfFileHandles;
   late _FreeStringNative _freeString;
 
   /// 单例
@@ -70,6 +71,9 @@ class GoDecryptFFI {
         .asFunction();
     _forceUnlockFile = _dylib
         .lookup<ffi.NativeFunction<_ForceUnlockFileFFI>>('ForceUnlockFile')
+        .asFunction();
+    _closeSelfFileHandles = _dylib
+        .lookup<ffi.NativeFunction<_CloseSelfFileHandlesFFI>>('CloseSelfFileHandles')
         .asFunction();
     _freeString = _dylib
         .lookup<ffi.NativeFunction<_FreeStringFFI>>('FreeString')
@@ -139,6 +143,27 @@ class GoDecryptFFI {
       malloc.free(filePathPtr);
     }
   }
+
+  /// 关闭当前进程中所有指向指定文件的句柄
+  /// 返回 null 表示成功，否则返回错误消息
+  String? closeSelfFileHandles(String filePath) {
+    final filePathPtr = filePath.toNativeUtf8();
+
+    try {
+      final errorPtr = _closeSelfFileHandles(filePathPtr.cast());
+
+      if (errorPtr == ffi.nullptr) {
+        return null; // 成功
+      }
+
+      // 读取错误消息
+      final error = errorPtr.cast<Utf8>().toDartString();
+      _freeString(errorPtr);
+      return error;
+    } finally {
+      malloc.free(filePathPtr);
+    }
+  }
 }
 
 // FFI 类型定义
@@ -166,6 +191,13 @@ typedef _ForceUnlockFileFFI = ffi.Pointer<ffi.Char> Function(
   ffi.Pointer<ffi.Char> filePath,
 );
 typedef _ForceUnlockFileNative = ffi.Pointer<ffi.Char> Function(
+  ffi.Pointer<ffi.Char> filePath,
+);
+
+typedef _CloseSelfFileHandlesFFI = ffi.Pointer<ffi.Char> Function(
+  ffi.Pointer<ffi.Char> filePath,
+);
+typedef _CloseSelfFileHandlesNative = ffi.Pointer<ffi.Char> Function(
   ffi.Pointer<ffi.Char> filePath,
 );
 
