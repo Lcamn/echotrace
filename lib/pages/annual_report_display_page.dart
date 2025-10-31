@@ -1799,9 +1799,39 @@ class _AnnualReportDisplayPageState extends State<AnnualReportDisplayPage> {
                           if (peakDay.topFriendDisplayName != null) ...[
                             SizedBox(height: height * 0.06),
                             
-                            // 第三句：好友信息
+                            // 第三句前缀：其中与
+                            FadeInText(
+                              text: AnnualReportTexts.peakDayWithFriendPrefix,
+                              delay: const Duration(milliseconds: 600),
+                              style: TextStyle(
+                                fontSize: bodySize,
+                                color: Colors.black87,
+                                fontFamily: 'HarmonyOS Sans SC',
+                                height: 1.6,
+                                fontWeight: FontWeight.w500,
+                              ),
+                              textAlign: TextAlign.center,
+                            ),
+                            
+                            // 好友名字
+                            SlideInCard(
+                              delay: const Duration(milliseconds: 700),
+                              child: _buildNameWithBlur(
+                                peakDay.topFriendDisplayName!,
+                                TextStyle(
+                                  fontSize: bodySize,
+                                  fontWeight: FontWeight.bold,
+                                  color: const Color(0xFF5C6BC0),
+                                  fontFamily: 'HarmonyOS Sans SC',
+                                ),
+                                textAlign: TextAlign.center,
+                                maxLines: 1,
+                              ),
+                            ),
+                            
+                            // 第三句后缀：聊了 XX 条
                             FadeInRichText(
-                              text: '${AnnualReportTexts.peakDayWithFriendPrefix}${peakDay.topFriendDisplayName}${AnnualReportTexts.peakDayWithFriendSuffix}${peakDay.topFriendMessageCount}${AnnualReportTexts.peakDayWithFriendMessagesUnit}',
+                              text: '${AnnualReportTexts.peakDayWithFriendSuffix}${peakDay.topFriendMessageCount}${AnnualReportTexts.peakDayWithFriendMessagesUnit}',
                               baseStyle: TextStyle(
                                 fontSize: bodySize,
                                 color: Colors.black87,
@@ -1810,22 +1840,16 @@ class _AnnualReportDisplayPageState extends State<AnnualReportDisplayPage> {
                                 fontWeight: FontWeight.w500,
                               ),
                               highlights: {
-                                peakDay.topFriendDisplayName ?? '': TextStyle(
-                                  fontSize: bodySize,
-                                  fontWeight: FontWeight.bold,
-                                  color: const Color(0xFF5C6BC0),
-                                  fontFamily: 'HarmonyOS Sans SC',
-                                ),
                                 peakDay.topFriendMessageCount.toString(): TextStyle(
                                   fontSize: bodySize,
                                   fontWeight: FontWeight.bold,
                                   color: const Color(0xFF07C160),
                                   fontFamily: 'HarmonyOS Sans SC',
-                              ),
-                            },
-                            delay: const Duration(milliseconds: 600),
-                          ),
-                        ],
+                                ),
+                              },
+                              delay: const Duration(milliseconds: 800),
+                            ),
+                          ],
                         
                         SizedBox(height: height * 0.08),
                           
@@ -1941,25 +1965,48 @@ class _AnnualReportDisplayPageState extends State<AnnualReportDisplayPage> {
                           ),
                           SizedBox(height: height * 0.08),
 
-                          // 第一句：和XXX聊了
-                          FadeInRichText(
-                            text: '你和 $displayName 连续聊了',
-                            baseStyle: TextStyle(
+                          // 第一句前缀：你和
+                          FadeInText(
+                            text: '你和',
+                            delay: const Duration(milliseconds: 300),
+                            style: TextStyle(
                               fontSize: bodySize,
                               color: Colors.black87,
                               fontFamily: 'HarmonyOS Sans SC',
                               height: 1.6,
                               fontWeight: FontWeight.w500,
                             ),
-                            highlights: {
-                              displayName: TextStyle(
+                            textAlign: TextAlign.center,
+                          ),
+                          
+                          // 好友名字
+                          SlideInCard(
+                            delay: const Duration(milliseconds: 400),
+                            child: _buildNameWithBlur(
+                              displayName,
+                              TextStyle(
                                 fontSize: bodySize,
                                 fontWeight: FontWeight.bold,
                                 color: const Color(0xFF5C6BC0),
                                 fontFamily: 'HarmonyOS Sans SC',
                               ),
-                            },
-                            delay: const Duration(milliseconds: 300),
+                              textAlign: TextAlign.center,
+                              maxLines: 1,
+                            ),
+                          ),
+                          
+                          // 第一句后缀：连续聊了
+                          FadeInText(
+                            text: '连续聊了',
+                            delay: const Duration(milliseconds: 500),
+                            style: TextStyle(
+                              fontSize: bodySize,
+                              color: Colors.black87,
+                              fontFamily: 'HarmonyOS Sans SC',
+                              height: 1.6,
+                              fontWeight: FontWeight.w500,
+                            ),
+                            textAlign: TextAlign.center,
                           ),
                           SizedBox(height: height * 0.05),
 
@@ -2278,25 +2325,48 @@ class _AnnualReportDisplayPageState extends State<AnnualReportDisplayPage> {
                           ),
                           SizedBox(height: height * 0.06),
 
-                          // 第二句：和XXX聊了
-                          FadeInRichText(
-                            text: '${AnnualReportTexts.midnightChattedWith} $displayName ${AnnualReportTexts.midnightChattedPrefix}',
-                            baseStyle: TextStyle(
+                          // 第二句前缀：你和
+                          FadeInText(
+                            text: AnnualReportTexts.midnightChattedWith,
+                            delay: const Duration(milliseconds: 500),
+                            style: TextStyle(
                               fontSize: bodySize,
                               color: Colors.black87,
                               fontFamily: 'HarmonyOS Sans SC',
                               height: 1.6,
                               fontWeight: FontWeight.w500,
                             ),
-                            highlights: {
-                              displayName: TextStyle(
+                            textAlign: TextAlign.center,
+                          ),
+                          
+                          // 好友名字
+                          SlideInCard(
+                            delay: const Duration(milliseconds: 600),
+                            child: _buildNameWithBlur(
+                              displayName,
+                              TextStyle(
                                 fontSize: bodySize,
                                 fontWeight: FontWeight.bold,
                                 color: const Color(0xFF5C6BC0),
                                 fontFamily: 'HarmonyOS Sans SC',
                               ),
-                            },
-                            delay: const Duration(milliseconds: 500),
+                              textAlign: TextAlign.center,
+                              maxLines: 1,
+                            ),
+                          ),
+                          
+                          // 第二句后缀：说过
+                          FadeInText(
+                            text: AnnualReportTexts.midnightChattedPrefix,
+                            delay: const Duration(milliseconds: 700),
+                            style: TextStyle(
+                              fontSize: bodySize,
+                              color: Colors.black87,
+                              fontFamily: 'HarmonyOS Sans SC',
+                              height: 1.6,
+                              fontWeight: FontWeight.w500,
+                            ),
+                            textAlign: TextAlign.center,
                           ),
                           SizedBox(height: height * 0.05),
 
@@ -2764,25 +2834,48 @@ class _AnnualReportDisplayPageState extends State<AnnualReportDisplayPage> {
                           ),
                           SizedBox(height: height * 0.06),
 
-                          // 第一句：还记得XXX吗
-                          FadeInRichText(
-                            text: '${AnnualReportTexts.formerFriendRemember} $displayName 聊天的时候吗',
-                            baseStyle: TextStyle(
+                          // 第一句前缀：还记得和
+                          FadeInText(
+                            text: AnnualReportTexts.formerFriendRemember,
+                            delay: const Duration(milliseconds: 200),
+                            style: TextStyle(
                               fontSize: bodySize,
                               color: Colors.black87,
                               fontFamily: 'HarmonyOS Sans SC',
                               height: 1.6,
                               fontWeight: FontWeight.w500,
                             ),
-                            highlights: {
-                              displayName: TextStyle(
+                            textAlign: TextAlign.center,
+                          ),
+                          
+                          // 好友名字
+                          SlideInCard(
+                            delay: const Duration(milliseconds: 300),
+                            child: _buildNameWithBlur(
+                              displayName,
+                              TextStyle(
                                 fontSize: bodySize,
                                 fontWeight: FontWeight.bold,
                                 color: const Color(0xFF5C6BC0),
                                 fontFamily: 'HarmonyOS Sans SC',
                               ),
-                            },
-                            delay: const Duration(milliseconds: 200),
+                              textAlign: TextAlign.center,
+                              maxLines: 1,
+                            ),
+                          ),
+                          
+                          // 第一句后缀：聊天的时候吗
+                          FadeInText(
+                            text: '聊天的时候吗',
+                            delay: const Duration(milliseconds: 400),
+                            style: TextStyle(
+                              fontSize: bodySize,
+                              color: Colors.black87,
+                              fontFamily: 'HarmonyOS Sans SC',
+                              height: 1.6,
+                              fontWeight: FontWeight.w500,
+                            ),
+                            textAlign: TextAlign.center,
                           ),
                           SizedBox(height: height * 0.06),
 
