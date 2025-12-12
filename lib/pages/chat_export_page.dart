@@ -382,6 +382,8 @@ class _ChatExportPageState extends State<ChatExportPage> {
         return 'HTML';
       case 'xlsx':
         return 'Excel';
+      case 'sql':
+        return 'SQL';
       default:
         return format.toUpperCase();
     }
@@ -811,6 +813,7 @@ class _ChatExportPageState extends State<ChatExportPage> {
                   _buildFormatOption('json', 'JSON', '结构化数据格式，便于程序处理'),
                   _buildFormatOption('html', 'HTML', '网页格式，便于浏览和分享'),
                   _buildFormatOption('xlsx', 'Excel', '表格格式，便于数据分析'),
+                  _buildFormatOption('sql', 'PostgreSQL', '数据库格式，便于导入到 PostgreSQL 数据库中'),
                   const SizedBox(height: 24),
                 ],
               ),
@@ -1032,6 +1035,13 @@ class _ExportProgressDialogState extends State<_ExportProgressDialog> {
             break;
           case 'xlsx':
             success = await exportService.exportToExcel(
+              session,
+              messages.reversed.toList(),
+              filePath: filePath,
+            );
+            break;
+          case 'sql':
+            success = await exportService.exportToPostgreSQL(
               session,
               messages.reversed.toList(),
               filePath: filePath,
