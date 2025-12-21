@@ -25,13 +25,13 @@ class Message {
   final int? isSend;
   // 发送者的 username（从 Name2Id 查询得到，用于群聊显示）
   final String? senderUsername;
-  // 图片消息的 MD5（从 XML 提取）
+  // 图片消息的 MD5
   final String? imageMd5;
-  // 动画表情 CDN URL（从 XML 提取，已解码 &amp;）
+  // 动画表情 CDN URL
   final String? emojiCdnUrl;
-  // 动画表情 MD5（从 XML 提取）
+  // 动画表情 MD5
   final String? emojiMd5;
-  // 动画表情尺寸（从 XML 提取）
+  // 动画表情尺寸
   final int? emojiWidth;
   final int? emojiHeight;
   // 我的wxid
@@ -738,7 +738,7 @@ class Message {
     try {
       // 兼容形如 voicelength="16765" 或 length=31264
       final pattern = RegExp(
-        '$attributeName\\s*=\\s*\"?(\\d+(?:\\.\\d+)?)\"?',
+        '$attributeName\\s*=\\s*"?(\\d+(?:\\.\\d+)?)"?',
         caseSensitive: false,
       );
       final match = pattern.firstMatch(xml);

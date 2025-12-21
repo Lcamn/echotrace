@@ -62,10 +62,6 @@ class GroupChatService {
     required DateTime endDate,
   }) async {
     // --- 服务层日志 ---
-    print('--- [Service Layer - MediaStats] ---');
-    print('接收到UI层请求，准备调用 DatabaseService...');
-    print('参数: chatroomId=$chatroomId');
-    print('------------------------------------');
     
     return await _databaseService.getGroupMediaTypeStats(
       chatroomId: chatroomId,
@@ -127,7 +123,6 @@ class GroupChatService {
     required DateTime endDate,
     int topN = 100,
   }) async {
-    print('--- [词云] 开始分析词频 for $memberUsername (仅词语版) ---');
     final endOfDay = DateTime(endDate.year, endDate.month, endDate.day, 23, 59, 59);
     
     try {
@@ -150,7 +145,6 @@ class GroupChatService {
         .join(' ');
   
       if (textContent.isEmpty) {
-        print('[词云] 未找到有效文本内容');
         return {};
       }
   
@@ -169,7 +163,6 @@ class GroupChatService {
       }
   
       if (wordCounts.isEmpty) {
-        print('[词云] 过滤后无有效词汇');
         return {};
       }
   
@@ -177,10 +170,8 @@ class GroupChatService {
         ..sort((a, b) => b.value.compareTo(a.value));
       final topEntries = sortedEntries.take(topN);
   
-      print('[词云] 分析完成，有效高频词数量：${topEntries.length}');
       return Map.fromEntries(topEntries);
     } catch (e) {
-      print('[词云] 分析词频时出错: $e');
       return {};
     }
   }
@@ -282,7 +273,6 @@ class GroupChatService {
         await db.close();
       }
     } catch (e) {
-      print('[调试] 获取群成员列表错误: $e');
     }
     return members;
   }

@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:isolate';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -9,6 +10,7 @@ import '../providers/app_state.dart';
 import '../models/chat_session.dart';
 import '../models/contact_record.dart';
 import '../services/chat_export_service.dart';
+import '../services/chat_export_background_service.dart';
 import '../widgets/common/shimmer_loading.dart';
 import '../utils/string_utils.dart';
 
@@ -932,8 +934,14 @@ class _ExportProgressDialogState extends State<_ExportProgressDialog> {
   bool _isCompleted = false;
   String _currentSessionName = '';
   int _currentMessageCount = 0;
+  bool _isScanningMessages = false;
   int _totalMessagesProcessed = 0;
+  int _exportedCount = 0;
   final List<String> _failedSessions = [];
+  Isolate? _exportIsolate;
+  ReceivePort? _exportReceivePort;
+  bool _isStartingIsolate = true;
+  String _exportStage = '';
 
   @override
   void initState() {
@@ -941,9 +949,26 @@ class _ExportProgressDialogState extends State<_ExportProgressDialog> {
     _startExport();
   }
 
+  @override
+  void dispose() {
+    _exportReceivePort?.close();
+    _exportIsolate?.kill(priority: Isolate.immediate);
+    super.dispose();
+  }
+
   Future<void> _startExport() async {
     final appState = context.read<AppState>();
-    final databaseService = appState.databaseService;
+    final dbPath = appState.databaseService.dbPath;
+    if (dbPath == null || dbPath.isEmpty) {
+      if (!mounted) return;
+      setState(() {
+        _isCompleted = true;
+        _failedCount = 1;
+        _failedSessions.add('数据库未连接，无法导出');
+      });
+      return;
+    }
+    final manualWxid = await appState.configService.getManualWxid();
 
     // 计算时间戳
     int startTimestamp;
@@ -966,116 +991,101 @@ class _ExportProgressDialogState extends State<_ExportProgressDialog> {
       endTimestamp = endOfDay.millisecondsSinceEpoch ~/ 1000;
     }
 
-    for (int i = 0; i < widget.sessions.length; i++) {
-      final username = widget.sessions[i];
-      final session = widget.allSessions.firstWhere(
-        (s) => s.username == username,
-      );
-
-      setState(() {
-        _currentIndex = i;
-        _currentSessionName = session.displayName ?? session.username;
-        _currentMessageCount = 0;
-      });
-
-      // 让UI有机会更新
-      await Future.delayed(const Duration(milliseconds: 50));
-
-      try {
-        // 获取消息
-        final messages = await databaseService.getMessagesByDate(
-          username,
-          startTimestamp,
-          endTimestamp,
-        );
-
-        setState(() {
-          _currentMessageCount = messages.length;
-        });
-
-        if (messages.isEmpty) {
-          setState(() {
-            _failedCount++;
-            _failedSessions.add(
-              '${session.displayName ?? session.username} (无消息)',
-            );
-          });
-          continue;
-        }
-
-        // 构建文件路径
-        final displayName = session.displayName ?? session.username;
-        final sanitizedName = displayName.replaceAll(
-          RegExp(r'[<>:"/\\|?*]'),
-          '_',
-        );
-        final timestamp = DateTime.now().millisecondsSinceEpoch;
-        final extension = widget.format;
-        final filePath =
-            '${widget.exportFolder}${Platform.pathSeparator}${sanitizedName}_$timestamp.$extension';
-
-        // 导出
-        bool success = false;
-        final exportService = ChatExportService(databaseService);
-
-        switch (widget.format) {
-          case 'json':
-            success = await exportService.exportToJson(
-              session,
-              messages.reversed.toList(),
-              filePath: filePath,
-            );
-            break;
-          case 'html':
-            success = await exportService.exportToHtml(
-              session,
-              messages.reversed.toList(),
-              filePath: filePath,
-            );
-            break;
-          case 'xlsx':
-            success = await exportService.exportToExcel(
-              session,
-              messages.reversed.toList(),
-              filePath: filePath,
-            );
-            break;
-          case 'sql':
-            success = await exportService.exportToPostgreSQL(
-              session,
-              messages.reversed.toList(),
-              filePath: filePath,
-            );
-            break;
-        }
-
-        if (success) {
-          setState(() {
-            _successCount++;
-            _totalMessagesProcessed += messages.length;
-          });
-        } else {
-          setState(() {
-            _failedCount++;
-            _failedSessions.add(
-              '${session.displayName ?? session.username} (导出失败)',
-            );
-          });
-        }
-      } catch (e) {
-        setState(() {
-          _failedCount++;
-          _failedSessions.add(
-            '${session.displayName ?? session.username} ($e)',
+    final sessionMaps = widget.sessions
+        .map((username) {
+          final session = widget.allSessions.firstWhere(
+            (s) => s.username == username,
           );
+          return <String, dynamic>{
+            'username': session.username,
+            'type': session.type,
+            'unread_count': session.unreadCount,
+            'unread_first_msg_srv_id': session.unreadFirstMsgSrvId,
+            'is_hidden': session.isHidden,
+            'summary': session.summary,
+            'draft': session.draft,
+            'status': session.status,
+            'last_timestamp': session.lastTimestamp,
+            'sort_timestamp': session.sortTimestamp,
+            'last_clear_unread_timestamp': session.lastClearUnreadTimestamp,
+            'last_msg_local_id': session.lastMsgLocalId,
+            'last_msg_type': session.lastMsgType,
+            'last_msg_sub_type': session.lastMsgSubType,
+            'last_msg_sender': session.lastMsgSender,
+            'last_sender_display_name': session.lastSenderDisplayName,
+            'displayName': session.displayName ?? '',
+          };
+        })
+        .toList();
+
+    _exportReceivePort = ReceivePort();
+    _exportReceivePort!.listen((dynamic message) {
+      if (!mounted) return;
+      if (message is! Map) return;
+      final type = message['type'] as String?;
+      if (type == ChatExportBackgroundService.messageProgress) {
+        setState(() {
+          _isStartingIsolate = false;
+          _currentIndex = (message['currentIndex'] as int?) ?? _currentIndex;
+          _currentSessionName =
+              (message['sessionName'] as String?) ?? _currentSessionName;
+          _currentMessageCount =
+              (message['scannedCount'] as int?) ?? _currentMessageCount;
+          _exportedCount = (message['exportedCount'] as int?) ?? _exportedCount;
+          _totalMessagesProcessed =
+              (message['totalMessagesProcessed'] as int?) ??
+              _totalMessagesProcessed;
+          _successCount = (message['successCount'] as int?) ?? _successCount;
+          _failedCount = (message['failedCount'] as int?) ?? _failedCount;
+          _isScanningMessages =
+              (message['isScanning'] as bool?) ?? _isScanningMessages;
+          _exportStage = (message['stage'] as String?) ?? _exportStage;
         });
+      } else if (type == ChatExportBackgroundService.messageDone) {
+        setState(() {
+          _isStartingIsolate = false;
+          _isCompleted = true;
+          _isScanningMessages = false;
+          _successCount = (message['successCount'] as int?) ?? _successCount;
+          _failedCount = (message['failedCount'] as int?) ?? _failedCount;
+          _totalMessagesProcessed =
+              (message['totalMessagesProcessed'] as int?) ??
+              _totalMessagesProcessed;
+          _exportedCount = _totalMessagesProcessed;
+          _failedSessions
+            ..clear()
+            ..addAll(
+              (message['failedSessions'] as List?)?.cast<String>() ??
+                  const <String>[],
+            );
+        });
+        _exportReceivePort?.close();
+        _exportReceivePort = null;
+        _exportIsolate = null;
+      } else if (type == ChatExportBackgroundService.messageError) {
+        setState(() {
+          _isStartingIsolate = false;
+          _isCompleted = true;
+          _isScanningMessages = false;
+          _failedCount++;
+          _failedSessions.add(message['error']?.toString() ?? '导出失败');
+        });
+        _exportReceivePort?.close();
+        _exportReceivePort = null;
+        _exportIsolate = null;
       }
+    });
 
-      // 让UI有机会更新
-      await Future.delayed(const Duration(milliseconds: 50));
-    }
-
-    setState(() => _isCompleted = true);
+    _exportIsolate = await ChatExportBackgroundService.startExport(
+      sendPort: _exportReceivePort!.sendPort,
+      dbPath: dbPath,
+      manualWxid: manualWxid,
+      sessions: sessionMaps,
+      format: widget.format,
+      exportFolder: widget.exportFolder,
+      startTimestamp: startTimestamp,
+      endTimestamp: endTimestamp,
+    );
   }
 
   @override
@@ -1084,107 +1094,271 @@ class _ExportProgressDialogState extends State<_ExportProgressDialog> {
         ? 0.0
         : (_currentIndex + 1) / widget.sessions.length;
     final remaining = widget.sessions.length - (_currentIndex + 1);
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+
+    final labelStyle = theme.textTheme.labelSmall?.copyWith(
+      color: colorScheme.onSurfaceVariant,
+      letterSpacing: 0.2,
+    );
+    final valueStyle = theme.textTheme.titleMedium?.copyWith(
+      fontWeight: FontWeight.w600,
+      color: colorScheme.onSurface,
+    );
+
+    Widget buildMetric(String label, String value, {Color? valueColor}) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(label, style: labelStyle),
+          const SizedBox(height: 4),
+          Text(
+            value,
+            style: valueStyle?.copyWith(color: valueColor ?? valueStyle.color),
+          ),
+        ],
+      );
+    }
 
     return AlertDialog(
-      title: Text(_isCompleted ? '导出完成' : '正在导出'),
+      backgroundColor: colorScheme.surface,
+      surfaceTintColor: Colors.transparent,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+      title: Text(
+        _isCompleted ? '导出完成' : '正在导出',
+        style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
+      ),
       content: SizedBox(
-        width: 450,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            if (!_isCompleted) ...[
-              LinearProgressIndicator(
-                value: progress,
-                minHeight: 8,
-                borderRadius: BorderRadius.circular(4),
+        width: 420,
+        child: AnimatedSwitcher(
+          duration: const Duration(milliseconds: 260),
+          switchInCurve: Curves.easeOut,
+          switchOutCurve: Curves.easeIn,
+          transitionBuilder: (child, animation) {
+            final fade = CurvedAnimation(parent: animation, curve: Curves.easeOut);
+            return FadeTransition(
+              opacity: fade,
+              child: SlideTransition(
+                position: Tween<Offset>(
+                  begin: const Offset(0, 0.04),
+                  end: Offset.zero,
+                ).animate(fade),
+                child: child,
               ),
-              const SizedBox(height: 16),
-              Text(
-                '当前会话: $_currentSessionName',
-                style: const TextStyle(fontWeight: FontWeight.w600),
-              ),
-              const SizedBox(height: 8),
-              Text('当前消息数: $_currentMessageCount 条'),
-              const SizedBox(height: 8),
-              Text('会话进度: ${_currentIndex + 1} / ${widget.sessions.length}'),
-              const SizedBox(height: 4),
-              Text('剩余会话: $remaining 个'),
-              const SizedBox(height: 8),
-              Text(
-                '已导出消息: $_totalMessagesProcessed 条',
-                style: TextStyle(color: Colors.grey.shade600),
-              ),
-            ] else ...[
-              Row(
-                children: [
-                  const Icon(Icons.check_circle, color: Colors.green, size: 48),
-                  const SizedBox(width: 16),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
+            );
+          },
+          child: _isCompleted
+              ? Column(
+                  key: const ValueKey('completed'),
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
                       children: [
-                        Text(
-                          '成功: $_successCount',
-                          style: const TextStyle(
-                            color: Colors.green,
-                            fontWeight: FontWeight.bold,
-                            fontSize: 16,
+                        Container(
+                          width: 44,
+                          height: 44,
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            border: Border.all(
+                              color: colorScheme.primary.withValues(alpha: 0.4),
+                              width: 1.5,
+                            ),
+                          ),
+                          child: Icon(
+                            Icons.check_rounded,
+                            color: colorScheme.primary,
+                            size: 26,
                           ),
                         ),
-                        Text(
-                          '总计导出: $_totalMessagesProcessed 条消息',
-                          style: TextStyle(color: Colors.grey.shade700),
+                        const SizedBox(width: 14),
+                        Expanded(
+                          child: Text(
+                            '导出已完成',
+                            style: theme.textTheme.titleSmall?.copyWith(
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
                         ),
-                        if (_failedCount > 0) ...[
-                          const SizedBox(height: 4),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: buildMetric(
+                            '成功',
+                            '$_successCount',
+                            valueColor: Colors.green.shade700,
+                          ),
+                        ),
+                        Container(
+                          width: 1,
+                          height: 28,
+                          color: colorScheme.outlineVariant,
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: buildMetric(
+                            '失败',
+                            '$_failedCount',
+                            valueColor: _failedCount > 0
+                                ? Colors.red.shade700
+                                : colorScheme.onSurfaceVariant,
+                          ),
+                        ),
+                        Container(
+                          width: 1,
+                          height: 28,
+                          color: colorScheme.outlineVariant,
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: buildMetric('总消息', '$_totalMessagesProcessed'),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+                    Text(
+                      '文件位置',
+                      style: labelStyle,
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      widget.exportFolder,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: colorScheme.onSurface,
+                      ),
+                    ),
+                    if (_failedSessions.isNotEmpty) ...[
+                      const SizedBox(height: 16),
+                      Text(
+                        '失败列表',
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          fontWeight: FontWeight.w600,
+                          color: colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Container(
+                        constraints: const BoxConstraints(maxHeight: 200),
+                        child: SingleChildScrollView(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: _failedSessions
+                                .map(
+                                  (name) => Padding(
+                                    padding: const EdgeInsets.only(bottom: 6),
+                                    child: Text(
+                                      '• $name',
+                                      style: theme.textTheme.bodySmall?.copyWith(
+                                        color: colorScheme.onSurfaceVariant,
+                                      ),
+                                    ),
+                                  ),
+                                )
+                                .toList(),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ],
+                )
+              : Column(
+                  key: const ValueKey('progress'),
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    if (widget.sessions.length > 1) ...[
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(999),
+                        child: LinearProgressIndicator(
+                          value: progress,
+                          minHeight: 6,
+                          backgroundColor: colorScheme.surfaceVariant,
+                        ),
+                      ),
+                      const SizedBox(height: 14),
+                      Row(
+                        children: [
                           Text(
-                            '失败: $_failedCount',
-                            style: const TextStyle(
-                              color: Colors.red,
-                              fontWeight: FontWeight.bold,
+                            '会话 ${_currentIndex + 1}/${widget.sessions.length}',
+                            style: labelStyle,
+                          ),
+                          const Spacer(),
+                          Text(
+                            '${(progress * 100).toStringAsFixed(0)}%',
+                            style: labelStyle,
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 18),
+                    ] else
+                      const SizedBox(height: 6),
+                    Text(
+                      _currentSessionName,
+                      style: theme.textTheme.titleSmall?.copyWith(
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    if (_isStartingIsolate)
+                      Text(
+                        '正在启动导出线程，请稍候...',
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: colorScheme.onSurfaceVariant,
+                        ),
+                      )
+                    else if (_isScanningMessages)
+                      Row(
+                        children: [
+                          Expanded(
+                            child: ClipRRect(
+                              borderRadius: BorderRadius.circular(999),
+                              child: LinearProgressIndicator(
+                                minHeight: 3,
+                                backgroundColor: colorScheme.surfaceVariant,
+                                color: colorScheme.primary,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          Text(
+                            '已扫描 $_currentMessageCount 条...',
+                            style: theme.textTheme.bodySmall?.copyWith(
+                              color: colorScheme.onSurfaceVariant,
                             ),
                           ),
                         ],
+                      )
+                    else
+                      Text(
+                        _exportStage.isNotEmpty
+                            ? _exportStage
+                            : '当前消息数: $_currentMessageCount 条',
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                    const SizedBox(height: 16),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: buildMetric('已导出消息', '$_exportedCount'),
+                        ),
+                        Container(
+                          width: 1,
+                          height: 28,
+                          color: colorScheme.outlineVariant,
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: buildMetric('剩余会话', '$remaining'),
+                        ),
                       ],
                     ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 12),
-              Text(
-                '文件位置: ${widget.exportFolder}',
-                style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
-              ),
-              if (_failedSessions.isNotEmpty) ...[
-                const SizedBox(height: 16),
-                const Text(
-                  '失败列表:',
-                  style: TextStyle(fontWeight: FontWeight.bold),
+                  ],
                 ),
-                const SizedBox(height: 8),
-                Container(
-                  constraints: const BoxConstraints(maxHeight: 200),
-                  child: SingleChildScrollView(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: _failedSessions
-                          .map(
-                            (name) => Padding(
-                              padding: const EdgeInsets.only(bottom: 4),
-                              child: Text(
-                                '• $name',
-                                style: const TextStyle(fontSize: 12),
-                              ),
-                            ),
-                          )
-                          .toList(),
-                    ),
-                  ),
-                ),
-              ],
-            ],
-          ],
         ),
       ),
       actions: [

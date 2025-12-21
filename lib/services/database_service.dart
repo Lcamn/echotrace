@@ -2,7 +2,6 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:convert';
-import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:crypto/crypto.dart';
@@ -21,8 +20,12 @@ enum DatabaseMode {
   realtime, // 实时读取加密数据库（WCDB）
 }
 
+typedef MessageQueryProgressCallback = void Function(int mappedCount);
+
 /// 数据库操作服务
 class DatabaseService {
+  static const int _uiYieldBatchSize = 200;
+
   // 数据库模式
   DatabaseMode _mode = DatabaseMode.decrypted;
   bool _isClosing = false;
@@ -85,6 +88,10 @@ class DatabaseService {
     if (factory == null) {
       databaseFactory = databaseFactoryFfi;
     }
+  }
+
+  Future<void> _yieldToEventLoop() async {
+    await Future<void>.delayed(Duration.zero);
   }
 
   /// 连接解密后的数据库（作为会话库）
@@ -940,13 +947,23 @@ class DatabaseService {
   Future<List<Message>> getMessagesByDate(
     String sessionId,
     int begintimestamp,
-    int endtimestamp,
-  ) async {
+    int endtimestamp, {
+    MessageQueryProgressCallback? onProgress,
+  }) async {
     if (_sessionDb == null) {
       throw Exception('数据库未连接');
     }
 
     try {
+      int totalMapped = 0;
+      void reportDelta(int mapped) {
+        if (mapped <= 0) return;
+        totalMapped += mapped;
+        onProgress?.call(totalMapped);
+      }
+
+      onProgress?.call(0);
+
       // 收集所有消息（可能分散在多个数据库中）
       final List<Message> allMessages = [];
 
@@ -963,8 +980,10 @@ class DatabaseService {
           0,
           begintimestamp: begintimestamp,
           endTimestamp: endtimestamp,
+          onProgress: reportDelta,
         );
         allMessages.addAll(messages);
+        await _yieldToEventLoop();
       }
 
       // 2. 搜索所有其他消息数据库，排除当前已查询的数据库
@@ -999,8 +1018,10 @@ class DatabaseService {
                 0,
                 begintimestamp: begintimestamp,
                 endTimestamp: endtimestamp,
+                onProgress: reportDelta,
               );
               allMessages.addAll(messages);
+              await _yieldToEventLoop();
             }
           } finally {
             await tempDb.close();
@@ -1118,6 +1139,7 @@ class DatabaseService {
     int offset, {
     int begintimestamp = 0,
     int endTimestamp = 0,
+    MessageQueryProgressCallback? onProgress,
   }) async {
     // 根据 real_sender_id 判断是否为自己发送
     // real_sender_id 是 Name2Id 表的 rowid，需要先查找当前用户wxid对应的rowid
@@ -1208,9 +1230,21 @@ class DatabaseService {
       }
     }
 
-    return maps
-        .map((map) => Message.fromMap(map, myWxid: _currentAccountWxid))
-        .toList();
+    final messages = <Message>[];
+    int batchMapped = 0;
+    for (int i = 0; i < maps.length; i++) {
+      messages.add(Message.fromMap(maps[i], myWxid: _currentAccountWxid));
+      batchMapped++;
+      if (i != 0 && i % _uiYieldBatchSize == 0) {
+        onProgress?.call(batchMapped);
+        batchMapped = 0;
+        await _yieldToEventLoop();
+      }
+    }
+    if (batchMapped > 0) {
+      onProgress?.call(batchMapped);
+    }
+    return messages;
   }
 
   Future<List<Message>> _queryMessagesFromTableLite(

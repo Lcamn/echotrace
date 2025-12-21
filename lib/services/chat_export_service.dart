@@ -11,6 +11,9 @@ import '../utils/path_utils.dart';
 import 'database_service.dart';
 import 'logger_service.dart';
 
+/// 导出进度回调：当前已写入条数，总条数
+typedef ExportProgressCallback = void Function(int exportedCount, int total);
+
 /// 聊天记录导出服务
 class ChatExportService {
   final DatabaseService _databaseService;
@@ -27,6 +30,8 @@ class ChatExportService {
     ChatSession session,
     List<Message> messages, {
     String? filePath,
+    ExportProgressCallback? onProgress,
+    bool streaming = false,
   }) async {
     try {
       // 获取联系人详细信息
@@ -66,59 +71,6 @@ class ChatExportService {
         myDisplayName: myDisplayName,
       );
 
-      final messageItems = messages.map((msg) {
-        final isSend = msg.isSend == 1;
-        final senderName = _resolveSenderDisplayName(
-          msg: msg,
-          session: session,
-          isSend: isSend,
-          contactInfo: contactInfo,
-          myContactInfo: myContactInfo,
-          senderDisplayNames: senderDisplayNames,
-          myDisplayName: myDisplayName,
-        );
-        final senderWxid = _resolveSenderUsername(
-          msg: msg,
-          session: session,
-          isSend: isSend,
-          myWxid: myWxid,
-        );
-
-        return {
-          'localId': msg.localId,
-          'createTime': msg.createTime,
-          'formattedTime': msg.formattedCreateTime,
-          'type': msg.typeDescription,
-          'localType': msg.localType,
-          'content': msg.displayContent,
-          'isSend': msg.isSend,
-          'senderUsername': senderWxid.isEmpty ? null : senderWxid,
-          'senderDisplayName': senderName,
-          'senderAvatarKey': senderWxid.isEmpty ? null : senderWxid,
-          'source': msg.source,
-        };
-      }).toList();
-
-      final data = {
-        'session': {
-          'wxid': _sanitizeUsername(session.username),
-          'nickname':
-              contactInfo['nickname'] ??
-              session.displayName ??
-              session.username,
-          'remark': _getRemarkOrAlias(contactInfo),
-          'displayName': session.displayName ?? session.username,
-          'type': session.typeDescription,
-          'lastTimestamp': session.lastTimestamp,
-          'messageCount': messages.length,
-        },
-        'messages': messageItems,
-        'avatars': avatars,
-        'exportTime': DateTime.now().toIso8601String(),
-      };
-
-      final jsonString = const JsonEncoder.withIndent('  ').convert(data);
-
       if (filePath == null) {
         final suggestedName =
             '${session.displayName ?? session.username}_聊天记录_${DateTime.now().millisecondsSinceEpoch}.json';
@@ -136,8 +88,141 @@ class ChatExportService {
       if (!await parentDir.exists()) {
         await parentDir.create(recursive: true);
       }
-      await file.writeAsString(jsonString);
-      return true;
+      if (!streaming) {
+        final messageItems = messages.map((msg) {
+          final isSend = msg.isSend == 1;
+          final senderName = _resolveSenderDisplayName(
+            msg: msg,
+            session: session,
+            isSend: isSend,
+            contactInfo: contactInfo,
+            myContactInfo: myContactInfo,
+            senderDisplayNames: senderDisplayNames,
+            myDisplayName: myDisplayName,
+          );
+          final senderWxid = _resolveSenderUsername(
+            msg: msg,
+            session: session,
+            isSend: isSend,
+            myWxid: myWxid,
+          );
+
+          return {
+            'localId': msg.localId,
+            'createTime': msg.createTime,
+            'formattedTime': msg.formattedCreateTime,
+            'type': msg.typeDescription,
+            'localType': msg.localType,
+            'content': msg.displayContent,
+            'isSend': msg.isSend,
+            'senderUsername': senderWxid.isEmpty ? null : senderWxid,
+            'senderDisplayName': senderName,
+            'senderAvatarKey': senderWxid.isEmpty ? null : senderWxid,
+            'source': msg.source,
+            if (msg.localType == 47 &&
+                msg.emojiMd5 != null &&
+                msg.emojiMd5!.isNotEmpty)
+              'emojiMd5': msg.emojiMd5,
+          };
+        }).toList();
+
+        final data = {
+          'session': {
+            'wxid': _sanitizeUsername(session.username),
+            'nickname':
+                contactInfo['nickname'] ??
+                session.displayName ??
+                session.username,
+            'remark': _getRemarkOrAlias(contactInfo),
+            'displayName': session.displayName ?? session.username,
+            'type': session.typeDescription,
+            'lastTimestamp': session.lastTimestamp,
+            'messageCount': messages.length,
+          },
+          'messages': messageItems,
+          'avatars': avatars,
+          'exportTime': DateTime.now().toIso8601String(),
+        };
+
+        final jsonString = const JsonEncoder.withIndent('  ').convert(data);
+        await file.writeAsString(jsonString);
+        onProgress?.call(messages.length, messages.length);
+        return true;
+      }
+
+      final sink = file.openWrite();
+      try {
+        final sessionData = {
+          'wxid': _sanitizeUsername(session.username),
+          'nickname':
+              contactInfo['nickname'] ??
+              session.displayName ??
+              session.username,
+          'remark': _getRemarkOrAlias(contactInfo),
+          'displayName': session.displayName ?? session.username,
+          'type': session.typeDescription,
+          'lastTimestamp': session.lastTimestamp,
+          'messageCount': messages.length,
+        };
+
+        sink.writeln('{');
+        sink.writeln('  "session": ${jsonEncode(sessionData)},');
+        sink.writeln('  "messages": [');
+
+        int exported = 0;
+        for (int i = 0; i < messages.length; i++) {
+          final msg = messages[i];
+          final isSend = msg.isSend == 1;
+          final senderName = _resolveSenderDisplayName(
+            msg: msg,
+            session: session,
+            isSend: isSend,
+            contactInfo: contactInfo,
+            myContactInfo: myContactInfo,
+            senderDisplayNames: senderDisplayNames,
+            myDisplayName: myDisplayName,
+          );
+          final senderWxid = _resolveSenderUsername(
+            msg: msg,
+            session: session,
+            isSend: isSend,
+            myWxid: myWxid,
+          );
+          final item = {
+            'localId': msg.localId,
+            'createTime': msg.createTime,
+            'formattedTime': msg.formattedCreateTime,
+            'type': msg.typeDescription,
+            'localType': msg.localType,
+            'content': msg.displayContent,
+            'isSend': msg.isSend,
+            'senderUsername': senderWxid.isEmpty ? null : senderWxid,
+            'senderDisplayName': senderName,
+            'senderAvatarKey': senderWxid.isEmpty ? null : senderWxid,
+            'source': msg.source,
+            if (msg.localType == 47 &&
+                msg.emojiMd5 != null &&
+                msg.emojiMd5!.isNotEmpty)
+              'emojiMd5': msg.emojiMd5,
+          };
+          final suffix = i == messages.length - 1 ? '' : ',';
+          sink.writeln('    ${jsonEncode(item)}$suffix');
+          exported++;
+          if (exported % 200 == 0 || exported == messages.length) {
+            onProgress?.call(exported, messages.length);
+          }
+        }
+
+        sink.writeln('  ],');
+        sink.writeln('  "avatars": ${jsonEncode(avatars)},');
+        sink.writeln('  "exportTime": "${DateTime.now().toIso8601String()}"');
+        sink.writeln('}');
+        await sink.flush();
+        onProgress?.call(messages.length, messages.length);
+        return true;
+      } finally {
+        await sink.close();
+      }
     } catch (e) {
       return false;
     }
@@ -148,6 +233,7 @@ class ChatExportService {
     ChatSession session,
     List<Message> messages, {
     String? filePath,
+    ExportProgressCallback? onProgress,
   }) async {
     try {
       // 获取联系人详细信息
@@ -198,6 +284,7 @@ class ChatExportService {
         myDisplayName,
         avatars,
       );
+      onProgress?.call(messages.length, messages.length);
 
       if (filePath == null) {
         final suggestedName =
@@ -228,6 +315,7 @@ class ChatExportService {
     ChatSession session,
     List<Message> messages, {
     String? filePath,
+    ExportProgressCallback? onProgress,
   }) async {
     final Workbook workbook = Workbook();
     try {
@@ -366,6 +454,9 @@ class ChatExportService {
         _setTextSafe(sheet, currentRow, 7, msg.typeDescription);
         _setTextSafe(sheet, currentRow, 8, msg.displayContent);
         currentRow++;
+        if ((i + 1) % 200 == 0 || i == messages.length - 1) {
+          onProgress?.call(i + 1, messages.length);
+        }
       }
 
       // 自动调整列宽（Syncfusion 使用 1-based 索引）
@@ -425,6 +516,7 @@ class ChatExportService {
         await parentDir.create(recursive: true);
       }
       await file.writeAsBytes(Uint8List.fromList(bytes));
+      onProgress?.call(messages.length, messages.length);
       return true;
     } catch (e) {
       workbook.dispose();
@@ -436,6 +528,8 @@ class ChatExportService {
     ChatSession session,
     List<Message> messages, {
     String? filePath,
+    ExportProgressCallback? onProgress,
+    bool streaming = false,
   }) async {
     try {
       // 获取联系人详细信息
@@ -487,62 +581,6 @@ class ChatExportService {
         senderContactInfos[rawAccountWxidTrimmed] = currentAccountInfo;
       }
 
-      final buffer = StringBuffer();
-
-      // Add DDL
-      buffer.writeln('DROP TABLE IF EXISTS "public"."echotrace"; CREATE TABLE "public"."echotrace" ("id" int4 NOT NULL GENERATED BY DEFAULT AS IDENTITY ( INCREMENT 1 MINVALUE 1 MAXVALUE 2147483647 START 1 CACHE 1 ), "date" date, "time" time(6), "is_send" bool, "content" text COLLATE "pg_catalog"."default", "send_name" varchar(255) COLLATE "pg_catalog"."default", "timestamp" timestamp(6),   CONSTRAINT "echotrace_pkey" PRIMARY KEY ("id") );');
-      buffer.writeln();
-      buffer.writeln('ALTER TABLE "public"."echotrace" OWNER TO "postgres";');
-      buffer.writeln();
-
-      // Add INSERTs
-      if (messages.isNotEmpty) {
-        buffer.writeln('INSERT INTO "public"."echotrace" ("date", "time", "is_send", "content", "send_name", "timestamp") VALUES',);
-
-        for (int i = 0; i < messages.length; i++) {
-          final msg = messages[i];
-
-          // 确定发送者信息
-          String senderRole;
-          String senderNickname;
-
-          if (msg.isSend == 1) {
-            senderRole = '我';
-            senderNickname = myDisplayName;
-          } else if (session.isGroup && msg.senderUsername != null) {
-            senderRole = senderDisplayNames[msg.senderUsername] ?? '群成员';
-            final info = senderContactInfos[msg.senderUsername] ?? {};
-            senderNickname = _resolvePreferredName(info, fallback: senderRole);
-          } else {
-            senderRole = session.displayName ?? session.username;
-            senderNickname = _resolvePreferredName(
-              contactInfo,
-              fallback: senderRole,
-            );
-          }
-
-          final dt = DateTime.fromMillisecondsSinceEpoch(msg.createTime * 1000);
-          final dateStr =
-              '${dt.year}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')}';
-          final timeStr =
-              '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}:${dt.second.toString().padLeft(2, '0')}';
-          final isSendBool = msg.isSend == 1 ? 'true' : 'false';
-          final contentEscaped = msg.displayContent.replaceAll("'", "''");
-          final sendNameEscaped = senderNickname.replaceAll("'", "''");
-          final timestampStr = '$dateStr $timeStr';
-
-          buffer.write(
-            "('$dateStr', '$timeStr', $isSendBool, '$contentEscaped', '$sendNameEscaped', '$timestampStr')",
-          );
-
-          if (i < messages.length - 1) {
-            buffer.writeln(',');
-          } else {
-            buffer.writeln(';');
-          }
-        }
-      }
-
       if (filePath == null) {
         final suggestedName =
             '${session.displayName ?? session.username}_聊天记录_${DateTime.now().millisecondsSinceEpoch}.sql';
@@ -561,8 +599,130 @@ class ChatExportService {
       if (!await parentDir.exists()) {
         await parentDir.create(recursive: true);
       }
-      await file.writeAsString(buffer.toString());
-      return true;
+      if (!streaming) {
+        final buffer = StringBuffer();
+        // Add DDL
+        buffer.writeln('DROP TABLE IF EXISTS "public"."echotrace"; CREATE TABLE "public"."echotrace" ("id" int4 NOT NULL GENERATED BY DEFAULT AS IDENTITY ( INCREMENT 1 MINVALUE 1 MAXVALUE 2147483647 START 1 CACHE 1 ), "date" date, "time" time(6), "is_send" bool, "content" text COLLATE "pg_catalog"."default", "send_name" varchar(255) COLLATE "pg_catalog"."default", "timestamp" timestamp(6),   CONSTRAINT "echotrace_pkey" PRIMARY KEY ("id") );');
+        buffer.writeln();
+        buffer.writeln('ALTER TABLE "public"."echotrace" OWNER TO "postgres";');
+        buffer.writeln();
+
+        if (messages.isNotEmpty) {
+          buffer.writeln('INSERT INTO "public"."echotrace" ("date", "time", "is_send", "content", "send_name", "timestamp") VALUES',);
+          for (int i = 0; i < messages.length; i++) {
+            final msg = messages[i];
+
+            String senderRole;
+            String senderNickname;
+
+            if (msg.isSend == 1) {
+              senderRole = '我';
+              senderNickname = myDisplayName;
+            } else if (session.isGroup && msg.senderUsername != null) {
+              senderRole = senderDisplayNames[msg.senderUsername] ?? '群成员';
+              final info = senderContactInfos[msg.senderUsername] ?? {};
+              senderNickname = _resolvePreferredName(info, fallback: senderRole);
+            } else {
+              senderRole = session.displayName ?? session.username;
+              senderNickname = _resolvePreferredName(
+                contactInfo,
+                fallback: senderRole,
+              );
+            }
+
+            final dt =
+                DateTime.fromMillisecondsSinceEpoch(msg.createTime * 1000);
+            final dateStr =
+                '${dt.year}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')}';
+            final timeStr =
+                '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}:${dt.second.toString().padLeft(2, '0')}';
+            final isSendBool = msg.isSend == 1 ? 'true' : 'false';
+            final contentEscaped = msg.displayContent.replaceAll("'", "''");
+            final sendNameEscaped = senderNickname.replaceAll("'", "''");
+            final timestampStr = '$dateStr $timeStr';
+
+            buffer.write(
+              "('$dateStr', '$timeStr', $isSendBool, '$contentEscaped', '$sendNameEscaped', '$timestampStr')",
+            );
+
+            if (i < messages.length - 1) {
+              buffer.writeln(',');
+            } else {
+              buffer.writeln(';');
+            }
+          }
+        }
+
+        await file.writeAsString(buffer.toString());
+        onProgress?.call(messages.length, messages.length);
+        return true;
+      }
+
+      final sink = file.openWrite();
+      try {
+        sink.writeln('DROP TABLE IF EXISTS "public"."echotrace"; CREATE TABLE "public"."echotrace" ("id" int4 NOT NULL GENERATED BY DEFAULT AS IDENTITY ( INCREMENT 1 MINVALUE 1 MAXVALUE 2147483647 START 1 CACHE 1 ), "date" date, "time" time(6), "is_send" bool, "content" text COLLATE "pg_catalog"."default", "send_name" varchar(255) COLLATE "pg_catalog"."default", "timestamp" timestamp(6),   CONSTRAINT "echotrace_pkey" PRIMARY KEY ("id") );');
+        sink.writeln();
+        sink.writeln('ALTER TABLE "public"."echotrace" OWNER TO "postgres";');
+        sink.writeln();
+
+        if (messages.isNotEmpty) {
+          sink.writeln('INSERT INTO "public"."echotrace" ("date", "time", "is_send", "content", "send_name", "timestamp") VALUES',);
+          int exported = 0;
+          for (int i = 0; i < messages.length; i++) {
+            final msg = messages[i];
+
+            String senderRole;
+            String senderNickname;
+
+            if (msg.isSend == 1) {
+              senderRole = '我';
+              senderNickname = myDisplayName;
+            } else if (session.isGroup && msg.senderUsername != null) {
+              senderRole = senderDisplayNames[msg.senderUsername] ?? '群成员';
+              final info = senderContactInfos[msg.senderUsername] ?? {};
+              senderNickname = _resolvePreferredName(info, fallback: senderRole);
+            } else {
+              senderRole = session.displayName ?? session.username;
+              senderNickname = _resolvePreferredName(
+                contactInfo,
+                fallback: senderRole,
+              );
+            }
+
+            final dt =
+                DateTime.fromMillisecondsSinceEpoch(msg.createTime * 1000);
+            final dateStr =
+                '${dt.year}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')}';
+            final timeStr =
+                '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}:${dt.second.toString().padLeft(2, '0')}';
+            final isSendBool = msg.isSend == 1 ? 'true' : 'false';
+            final contentEscaped = msg.displayContent.replaceAll("'", "''");
+            final sendNameEscaped = senderNickname.replaceAll("'", "''");
+            final timestampStr = '$dateStr $timeStr';
+
+            sink.write(
+              "('$dateStr', '$timeStr', $isSendBool, '$contentEscaped', '$sendNameEscaped', '$timestampStr')",
+            );
+
+            if (i < messages.length - 1) {
+              sink.writeln(',');
+            } else {
+              sink.writeln(';');
+            }
+
+            exported++;
+            if (exported % 200 == 0 || exported == messages.length) {
+              onProgress?.call(exported, messages.length);
+            }
+          }
+        }
+
+        await sink.flush();
+        onProgress?.call(messages.length, messages.length);
+        return true;
+      } finally {
+        await sink.close();
+      }
     } catch (e) {
       return false;
     }

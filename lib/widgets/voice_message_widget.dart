@@ -194,7 +194,7 @@ class _VoiceMessageWidgetState extends State<VoiceMessageWidget>
   @override
   Widget build(BuildContext context) {
     final duration = widget.message.voiceDurationSeconds;
-    final durationText = duration != null && duration > 0 ? '${duration}秒' : '';
+    final durationText = duration != null && duration > 0 ? '$duration秒' : '';
 
     final theme = Theme.of(context);
     final bubbleColor = widget.isFromMe
@@ -212,22 +212,22 @@ class _VoiceMessageWidgetState extends State<VoiceMessageWidget>
               : Icons.play_circle_fill_rounded)
         : Icons.lock_open_rounded;
 
-    String _baseLabel() => durationText.isNotEmpty ? '语音 $durationText' : '语音';
+    String baseLabel() => durationText.isNotEmpty ? '语音 $durationText' : '语音';
 
-    String _labelForPlayable() {
+    String labelForPlayable() {
       if (_isPlaying) {
         return durationText.isNotEmpty ? '播放中 $durationText' : '播放中';
       }
-      return _baseLabel();
+      return baseLabel();
     }
 
-    String _labelForLocked() => '点击以解密${_baseLabel()}';
+    String labelForLocked() => '点击以解密${baseLabel()}';
 
     final label = isBusy
         ? '解密中 ${durationText.isNotEmpty ? durationText : ""}'.trim()
         : canPlay
-        ? _labelForPlayable()
-        : _labelForLocked();
+        ? labelForPlayable()
+        : labelForLocked();
 
     final labelStyle = theme.textTheme.bodyMedium?.copyWith(
       color: textColor,
