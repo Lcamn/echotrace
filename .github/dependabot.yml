@@ -1,0 +1,13 @@
+version: 2
+updates:
+  # 1. Flutter部分
+  - package-ecosystem: "pub"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+
+  # 2. Go 子模块
+  - package-ecosystem: "gomod"
+    directory: "/go_decrypt"
+    schedule:
+      interval: "weekly"
