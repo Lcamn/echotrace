@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -12,7 +13,9 @@ import '../models/contact_record.dart';
 import '../models/message.dart';
 import '../services/chat_export_service.dart';
 import '../services/database_service.dart';
+import '../services/logger_service.dart';
 import '../widgets/common/shimmer_loading.dart';
+import '../widgets/toast_overlay.dart';
 import '../utils/string_utils.dart';
 
 /// 聊天记录导出页面
@@ -23,7 +26,9 @@ class ChatExportPage extends StatefulWidget {
   State<ChatExportPage> createState() => _ChatExportPageState();
 }
 
-class _ChatExportPageState extends State<ChatExportPage> {
+class _ChatExportPageState extends State<ChatExportPage>
+    with TickerProviderStateMixin {
+  late final ToastOverlay _toast;
   List<ChatSession> _allSessions = [];
   Set<String> _selectedSessions = {};
   bool _isLoadingSessions = false;
@@ -37,6 +42,8 @@ class _ChatExportPageState extends State<ChatExportPage> {
   bool _hasAttemptedRefreshAfterConnect = false;
   bool _useAllTime = false;
   bool _isExportingContacts = false;
+  late final TextEditingController _searchController;
+  late final FocusNode _searchFocusNode;
 
   // 添加静态缓存变量，用于存储会话列表
   static List<ChatSession>? _cachedSessions;
@@ -44,6 +51,11 @@ class _ChatExportPageState extends State<ChatExportPage> {
   @override
   void initState() {
     super.initState();
+    _toast = ToastOverlay(this);
+    _searchController = TextEditingController();
+    _searchFocusNode = FocusNode();
+    _searchController.addListener(_handleSearchQueryChanged);
+    _searchFocusNode.addListener(_handleSearchFocusChange);
     _loadSessions();
     _loadExportFolder();
     // 默认选择最近7天
@@ -53,6 +65,31 @@ class _ChatExportPageState extends State<ChatExportPage> {
     );
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _ensureConnected();
+    });
+  }
+
+  @override
+  void dispose() {
+    _toast.dispose();
+    _searchController.removeListener(_handleSearchQueryChanged);
+    _searchController.dispose();
+    _searchFocusNode.removeListener(_handleSearchFocusChange);
+    _searchFocusNode.dispose();
+    super.dispose();
+  }
+
+  void _handleSearchFocusChange() {
+    if (_searchFocusNode.hasFocus) {
+      HardwareKeyboard.instance.clearState();
+    }
+  }
+
+  void _handleSearchQueryChanged() {
+    final value = _searchController.text;
+    if (value == _searchQuery) return;
+    setState(() {
+      _searchQuery = value;
+      _selectAll = false;
     });
   }
 
@@ -84,18 +121,14 @@ class _ChatExportPageState extends State<ChatExportPage> {
 
     if (!mounted) return;
 
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: Text('已设置导出文件夹: $result')));
+    _toast.show(context, '已设置导出文件夹: $result');
   }
 
   Future<void> _exportContacts() async {
     final appState = context.read<AppState>();
     if (!appState.databaseService.isConnected) {
       if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(const SnackBar(content: Text('请先连接数据库后再导出通讯录')));
+        _toast.show(context, '请先连接数据库后再导出通讯录', success: false);
       }
       return;
     }
@@ -157,14 +190,10 @@ class _ChatExportPageState extends State<ChatExportPage> {
 
       summary.write('）');
 
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text(summary.toString())));
+      _toast.show(context, summary.toString());
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('导出通讯录失败: $e')));
+        _toast.show(context, '导出通讯录失败: $e', success: false);
       }
     } finally {
       if (mounted) {
@@ -260,9 +289,7 @@ class _ChatExportPageState extends State<ChatExportPage> {
         setState(() {
           _isLoadingSessions = false;
         });
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('加载会话列表失败: $e')));
+        _toast.show(context, '加载会话列表失败: $e', success: false);
       }
     }
   }
@@ -280,9 +307,7 @@ class _ChatExportPageState extends State<ChatExportPage> {
     await _loadSessions();
 
     if (mounted) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('会话列表已刷新')));
+      _toast.show(context, '会话列表已刷新');
     }
   }
 
@@ -323,9 +348,7 @@ class _ChatExportPageState extends State<ChatExportPage> {
 
   Future<void> _selectDateRange() async {
     if (_useAllTime) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('已选择全部时间，无需设置日期范围')));
+      _toast.show(context, '已选择全部时间，无需设置日期范围');
       return;
     }
 
@@ -355,16 +378,12 @@ class _ChatExportPageState extends State<ChatExportPage> {
 
   Future<void> _startExport() async {
     if (_selectedSessions.isEmpty) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('请至少选择一个会话')));
+      _toast.show(context, '请至少选择一个会话', success: false);
       return;
     }
 
     if (_exportFolder == null) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('请先选择导出文件夹')));
+      _toast.show(context, '请先选择导出文件夹', success: false);
       return;
     }
 
@@ -458,72 +477,73 @@ class _ChatExportPageState extends State<ChatExportPage> {
     }
 
     return Scaffold(
-      backgroundColor: Colors.grey.shade50,
-      body: Stack(
-        children: [
-          // 主内容
-          Column(
-            children: [
-              _buildHeader(),
-              _buildFilterBar(),
-              Expanded(
-                child: Row(
-                  children: [
-                    Expanded(flex: 2, child: _buildSessionList()),
-                    Container(
-                      width: 1,
-                      color: Colors.grey.withValues(alpha: 0.2),
-                    ),
-                    Expanded(flex: 1, child: _buildExportSettings()),
-                  ],
-                ),
-              ),
-            ],
-          ),
-
-          // 遮罩层 (加载/错误)
-          Positioned.fill(
-            child: AnimatedSwitcher(
-              duration: const Duration(milliseconds: 500),
-              switchInCurve: Curves.easeInOutCubic,
-              switchOutCurve: Curves.easeInOutCubic,
-              transitionBuilder: (child, animation) {
-                // 出入场动画
-                return FadeTransition(
-                  opacity: animation,
-                  child: ScaleTransition(
-                    scale: animation.drive(
-                      Tween<double>(
-                        begin: 0.96,
-                        end: 1.0,
-                      ).chain(CurveTween(curve: Curves.easeOutCubic)),
-                    ),
-                    child: child,
-                  ),
-                );
-              },
-              child: showErrorOverlay
-                  ? Container(
-                      key: const ValueKey('error_overlay'),
-                      color: Colors.white,
-                      child: Center(
-                        child: _buildErrorOverlay(
-                          context,
-                          appState,
-                          appState.errorMessage ?? '未能连接数据库',
-                        ),
+      backgroundColor: Colors.white,
+      body: AnimatedPageWrapper(
+        child: Stack(
+          children: [
+            Column(
+              children: [
+                _buildHeader(),
+                _buildFilterBar(),
+                Expanded(
+                  child: Row(
+                    children: [
+                      Expanded(flex: 2, child: _buildSessionList()),
+                      Container(
+                        width: 1,
+                        color: Colors.grey.withValues(alpha: 0.2),
                       ),
-                    )
-                  : isConnecting
-                  ? Container(
-                      key: const ValueKey('loading_overlay'),
-                      color: Colors.white.withValues(alpha: 0.98),
-                      child: Center(child: _buildFancyLoader(context)),
-                    )
-                  : const SizedBox.shrink(key: ValueKey('none')),
+                      Expanded(flex: 1, child: _buildExportSettings()),
+                    ],
+                  ),
+                ),
+              ],
             ),
-          ),
-        ],
+
+            // 遮罩层 (加载/错误)
+            Positioned.fill(
+              child: AnimatedSwitcher(
+                duration: const Duration(milliseconds: 500),
+                switchInCurve: Curves.easeInOutCubic,
+                switchOutCurve: Curves.easeInOutCubic,
+                transitionBuilder: (child, animation) {
+                  // 出入场动画
+                  return FadeTransition(
+                    opacity: animation,
+                    child: ScaleTransition(
+                      scale: animation.drive(
+                        Tween<double>(
+                          begin: 0.96,
+                          end: 1.0,
+                        ).chain(CurveTween(curve: Curves.easeOutCubic)),
+                      ),
+                      child: child,
+                    ),
+                  );
+                },
+                child: showErrorOverlay
+                    ? Container(
+                        key: const ValueKey('error_overlay'),
+                        color: Colors.white,
+                        child: Center(
+                          child: _buildErrorOverlay(
+                            context,
+                            appState,
+                            appState.errorMessage ?? '未能连接数据库',
+                          ),
+                        ),
+                      )
+                    : isConnecting
+                    ? Container(
+                        key: const ValueKey('loading_overlay'),
+                        color: Colors.white.withValues(alpha: 0.98),
+                        child: Center(child: _buildFancyLoader(context)),
+                      )
+                    : const SizedBox.shrink(key: ValueKey('none')),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -673,35 +693,63 @@ class _ChatExportPageState extends State<ChatExportPage> {
 
   Widget _buildHeader() {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
+      padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 24),
       decoration: BoxDecoration(
         color: Colors.white,
         border: Border(
           bottom: BorderSide(
-            color: Colors.grey.withValues(alpha: 0.1),
+            color: Colors.grey.withValues(alpha: 0.08),
             width: 1,
           ),
         ),
       ),
       child: Row(
         children: [
-          Icon(
-            Icons.file_download_outlined,
-            size: 28,
-            color: Theme.of(context).colorScheme.primary,
+          Container(
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: Theme.of(
+                context,
+              ).colorScheme.primary.withValues(alpha: 0.1),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Icon(
+              Icons.file_download_outlined,
+              size: 24,
+              color: Theme.of(context).colorScheme.primary,
+            ),
           ),
-          const SizedBox(width: 12),
-          Text(
-            '导出聊天记录',
-            style: Theme.of(
-              context,
-            ).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.bold),
+          const SizedBox(width: 16),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                '导出聊天记录',
+                style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                  fontWeight: FontWeight.w800,
+                  fontSize: 22,
+                  letterSpacing: -0.5,
+                ),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                '选择会话并配置导出参数',
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: Colors.grey.shade500,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ],
           ),
           const Spacer(),
           IconButton(
-            icon: const Icon(Icons.refresh),
-            onPressed: _refreshSessions, // 修改为使用新的刷新方法
+            icon: const Icon(Icons.refresh_rounded),
+            onPressed: _refreshSessions,
             tooltip: '刷新列表',
+            style: IconButton.styleFrom(
+              backgroundColor: Colors.grey.shade50,
+              padding: const EdgeInsets.all(12),
+            ),
           ),
         ],
       ),
@@ -710,12 +758,12 @@ class _ChatExportPageState extends State<ChatExportPage> {
 
   Widget _buildFilterBar() {
     return Container(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 16),
       decoration: BoxDecoration(
         color: Colors.white,
         border: Border(
           bottom: BorderSide(
-            color: Colors.grey.withValues(alpha: 0.1),
+            color: Colors.grey.withValues(alpha: 0.08),
             width: 1,
           ),
         ),
@@ -723,52 +771,89 @@ class _ChatExportPageState extends State<ChatExportPage> {
       child: Row(
         children: [
           Expanded(
-            child: TextField(
-              decoration: InputDecoration(
-                hintText: '搜索会话...',
-                prefixIcon: const Icon(Icons.search),
-                enabledBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(8),
-                  borderSide: const BorderSide(color: Colors.grey),
-                ),
-                focusedBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(8),
-                  borderSide: const BorderSide(color: Colors.grey, width: 1.5),
-                ),
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(8),
-                  borderSide: const BorderSide(color: Colors.grey),
-                ),
-                contentPadding: const EdgeInsets.symmetric(
-                  horizontal: 16,
-                  vertical: 12,
+            child: Container(
+              decoration: BoxDecoration(
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.02),
+                    blurRadius: 8,
+                    offset: const Offset(0, 2),
+                  ),
+                ],
+              ),
+              child: TextField(
+                controller: _searchController,
+                focusNode: _searchFocusNode,
+                decoration: InputDecoration(
+                  hintText: '搜索联系人或群组...',
+                  hintStyle: TextStyle(
+                    color: Colors.grey.shade400,
+                    fontSize: 14,
+                  ),
+                  prefixIcon: Icon(
+                    Icons.search_rounded,
+                    color: Colors.grey.shade400,
+                    size: 20,
+                  ),
+                  filled: true,
+                  fillColor: Colors.grey.shade50,
+                  enabledBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: BorderSide(color: Colors.grey.shade200),
+                  ),
+                  focusedBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: BorderSide(
+                      color: Theme.of(
+                        context,
+                      ).colorScheme.primary.withValues(alpha: 0.5),
+                      width: 1.5,
+                    ),
+                  ),
+                  contentPadding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 12,
+                  ),
+                  suffixIcon: _searchQuery.isNotEmpty
+                      ? IconButton(
+                          icon: const Icon(Icons.clear_rounded, size: 18),
+                          onPressed: () {
+                            _searchController.clear();
+                            _searchFocusNode.requestFocus();
+                          },
+                        )
+                      : null,
                 ),
               ),
-              onChanged: (value) {
-                setState(() {
-                  _searchQuery = value;
-                  _selectAll = false;
-                });
-              },
             ),
           ),
-          const SizedBox(width: 16),
-          ElevatedButton.icon(
+          const SizedBox(width: 24),
+          OutlinedButton.icon(
             onPressed: _toggleSelectAll,
-            icon: Icon(
-              _selectAll ? Icons.check_box : Icons.check_box_outline_blank,
-            ),
-            label: Text(_selectAll ? '取消全选' : '全选'),
-            style: ElevatedButton.styleFrom(
-              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+            label: Text(_selectAll ? '重置选择' : '快速全选'),
+            style: OutlinedButton.styleFrom(
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 18),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
             ),
           ),
-          const SizedBox(width: 8),
-          Text(
-            '已选择: ${_selectedSessions.length}',
-            style: Theme.of(
-              context,
-            ).textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w500),
+          const SizedBox(width: 20),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            decoration: BoxDecoration(
+              color: Theme.of(
+                context,
+              ).colorScheme.primary.withValues(alpha: 0.05),
+              borderRadius: BorderRadius.circular(20),
+            ),
+            child: Text(
+              '已选 ${_selectedSessions.length}',
+              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                fontWeight: FontWeight.w700,
+                color: Theme.of(context).colorScheme.primary,
+              ),
+            ),
           ),
         ],
       ),
@@ -850,93 +935,127 @@ class _ChatExportPageState extends State<ChatExportPage> {
           );
         }
 
-        return ListView.builder(
+        return ListView.separated(
           itemCount: sessions.length,
-          padding: const EdgeInsets.all(8),
+          padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 24),
+          separatorBuilder: (context, index) =>
+              const Divider(height: 1, indent: 72),
           itemBuilder: (context, index) {
             final session = sessions[index];
             final isSelected = _selectedSessions.contains(session.username);
             final avatarUrl = appState.getAvatarUrl(session.username);
 
-            return Card(
-              margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-              elevation: isSelected ? 2 : 0,
-              color: isSelected
-                  ? Theme.of(context).colorScheme.primary.withValues(alpha: 0.1)
-                  : null,
-              child: ListTile(
-                leading: (avatarUrl != null && avatarUrl.isNotEmpty)
-                    ? CachedNetworkImage(
-                        imageUrl: avatarUrl,
-                        imageBuilder: (context, imageProvider) => CircleAvatar(
-                          backgroundColor: isSelected
-                              ? Theme.of(context).colorScheme.primary
-                              : Colors.grey.shade300,
-                          backgroundImage: imageProvider,
-                        ),
-                        placeholder: (context, url) => CircleAvatar(
-                          backgroundColor: isSelected
-                              ? Theme.of(context).colorScheme.primary
-                              : Colors.grey.shade300,
-                          child: Text(
-                            StringUtils.getFirstChar(
-                              session.displayName ?? session.username,
-                            ),
-                            style: TextStyle(
-                              color: isSelected
-                                  ? Colors.white
-                                  : Colors.grey.shade700,
-                              fontWeight: FontWeight.bold,
-                            ),
+            return InkWell(
+              onTap: () => _toggleSession(session.username),
+              borderRadius: BorderRadius.circular(12),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(
+                  vertical: 10,
+                  horizontal: 8,
+                ),
+                child: Row(
+                  children: [
+                    // 头像部分
+                    SizedBox(
+                      width: 48,
+                      height: 48,
+                      child: Stack(
+                        children: [
+                          Positioned.fill(
+                            child: (avatarUrl != null && avatarUrl.isNotEmpty)
+                                ? CachedNetworkImage(
+                                    imageUrl: avatarUrl,
+                                    imageBuilder: (context, imageProvider) =>
+                                        Container(
+                                          decoration: BoxDecoration(
+                                            borderRadius: BorderRadius.circular(
+                                              10,
+                                            ),
+                                            image: DecorationImage(
+                                              image: imageProvider,
+                                              fit: BoxFit.cover,
+                                            ),
+                                          ),
+                                        ),
+                                    placeholder: (context, url) =>
+                                        _buildAvatarPlaceholder(
+                                          context,
+                                          session,
+                                          isSelected,
+                                        ),
+                                    errorWidget: (context, url, error) =>
+                                        _buildAvatarPlaceholder(
+                                          context,
+                                          session,
+                                          isSelected,
+                                        ),
+                                  )
+                                : _buildAvatarPlaceholder(
+                                    context,
+                                    session,
+                                    isSelected,
+                                  ),
                           ),
-                        ),
-                        errorWidget: (context, url, error) => CircleAvatar(
-                          backgroundColor: isSelected
-                              ? Theme.of(context).colorScheme.primary
-                              : Colors.grey.shade300,
-                          child: Text(
-                            StringUtils.getFirstChar(
-                              session.displayName ?? session.username,
+                          if (isSelected)
+                            Positioned(
+                              right: -2,
+                              bottom: -2,
+                              child: Container(
+                                padding: const EdgeInsets.all(2),
+                                decoration: const BoxDecoration(
+                                  color: Colors.white,
+                                  shape: BoxShape.circle,
+                                ),
+                                child: Icon(
+                                  Icons.check_circle_rounded,
+                                  size: 18,
+                                  color: Theme.of(context).colorScheme.primary,
+                                ),
+                              ),
                             ),
-                            style: TextStyle(
-                              color: isSelected
-                                  ? Colors.white
-                                  : Colors.grey.shade700,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                        ),
-                      )
-                    : CircleAvatar(
-                        backgroundColor: isSelected
-                            ? Theme.of(context).colorScheme.primary
-                            : Colors.grey.shade300,
-                        child: Text(
-                          StringUtils.getFirstChar(
-                            session.displayName ?? session.username,
-                          ),
-                          style: TextStyle(
-                            color: isSelected
-                                ? Colors.white
-                                : Colors.grey.shade700,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
+                        ],
                       ),
-                title: Text(
-                  session.displayName ?? session.username,
-                  style: TextStyle(
-                    fontWeight: isSelected
-                        ? FontWeight.w600
-                        : FontWeight.normal,
-                  ),
+                    ),
+                    const SizedBox(width: 16),
+                    // 会话信息
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            session.displayName ?? session.username,
+                            style: TextStyle(
+                              fontSize: 15,
+                              fontWeight: isSelected
+                                  ? FontWeight.w700
+                                  : FontWeight.w600,
+                              color: isSelected
+                                  ? Theme.of(context).colorScheme.primary
+                                  : Colors.black87,
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            session.typeDescription,
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: Colors.grey.shade500,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    // 选择框
+                    Checkbox(
+                      value: isSelected,
+                      onChanged: (value) => _toggleSession(session.username),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      activeColor: Theme.of(context).colorScheme.primary,
+                    ),
+                  ],
                 ),
-                subtitle: Text(session.typeDescription),
-                trailing: Checkbox(
-                  value: isSelected,
-                  onChanged: (value) => _toggleSession(session.username),
-                ),
-                onTap: () => _toggleSession(session.username),
               ),
             );
           },
@@ -945,160 +1064,231 @@ class _ChatExportPageState extends State<ChatExportPage> {
     );
   }
 
+  Widget _buildAvatarPlaceholder(
+    BuildContext context,
+    ChatSession session,
+    bool isSelected,
+  ) {
+    return Container(
+      decoration: BoxDecoration(
+        color: isSelected
+            ? Theme.of(context).colorScheme.primary.withValues(alpha: 0.1)
+            : Colors.grey.shade100,
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Center(
+        child: Text(
+          StringUtils.getFirstChar(session.displayName ?? session.username),
+          style: TextStyle(
+            color: isSelected
+                ? Theme.of(context).colorScheme.primary
+                : Colors.grey.shade600,
+            fontWeight: FontWeight.bold,
+            fontSize: 18,
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _buildExportSettings() {
     return Container(
-      color: Colors.grey.shade50,
+      decoration: BoxDecoration(
+        color: Colors.grey.shade50,
+        border: Border(
+          left: BorderSide(
+            color: Colors.grey.withValues(alpha: 0.08),
+            width: 1,
+          ),
+        ),
+      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Padding(
-            padding: const EdgeInsets.all(24),
+          Container(
+            padding: const EdgeInsets.fromLTRB(32, 32, 32, 24),
             child: Text(
-              '导出设置',
-              style: Theme.of(
-                context,
-              ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold),
+              '导出配置',
+              style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                fontWeight: FontWeight.w800,
+                fontSize: 20,
+              ),
             ),
           ),
-
           Expanded(
             child: SingleChildScrollView(
-              padding: const EdgeInsets.symmetric(horizontal: 24),
+              padding: const EdgeInsets.symmetric(horizontal: 32),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  // 导出文件夹设置
-                  Text(
-                    '导出位置',
-                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  OutlinedButton.icon(
-                    onPressed: _selectExportFolder,
-                    icon: const Icon(Icons.folder_open),
-                    label: Text(
-                      _exportFolder ?? '选择导出文件夹',
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                    style: OutlinedButton.styleFrom(
-                      padding: const EdgeInsets.all(16),
-                      alignment: Alignment.centerLeft,
-                    ),
-                  ),
-                  const SizedBox(height: 24),
-
-                  Text(
-                    '通讯录导出',
-                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    '将当前账号的通讯录导出为 Excel 表格',
-                    style: Theme.of(context).textTheme.bodySmall,
-                  ),
-                  const SizedBox(height: 12),
-                  OutlinedButton.icon(
-                    onPressed: _isExportingContacts ? null : _exportContacts,
-                    icon: _isExportingContacts
-                        ? SizedBox(
-                            width: 18,
-                            height: 18,
-                            child: const CircularProgressIndicator(
-                              strokeWidth: 2,
-                            ),
-                          )
-                        : const Icon(Icons.contacts),
-                    label: Text(
-                      _isExportingContacts ? '正在导出通讯录...' : '导出通讯录 (Excel)',
-                    ),
-                    style: OutlinedButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 16,
-                        vertical: 14,
+                  _buildSettingSection(
+                    title: '存储位置',
+                    child: OutlinedButton.icon(
+                      onPressed: _selectExportFolder,
+                      icon: Icon(
+                        Icons.folder_open_rounded,
+                        size: 18,
+                        color: Colors.grey.shade600,
+                      ),
+                      label: Text(
+                        _exportFolder ?? '选择导出目录',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: _exportFolder != null
+                              ? Colors.black87
+                              : Colors.grey.shade400,
+                          fontSize: 13,
+                        ),
+                      ),
+                      style: OutlinedButton.styleFrom(
+                        padding: const EdgeInsets.all(16),
+                        alignment: Alignment.centerLeft,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        backgroundColor: Colors.white,
+                        side: BorderSide(color: Colors.grey.shade200),
                       ),
                     ),
                   ),
                   const SizedBox(height: 24),
-
-                  // 日期范围选择
-                  Text(
-                    '日期范围',
-                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  CheckboxListTile(
-                    value: _useAllTime,
-                    onChanged: (value) {
-                      setState(() {
-                        _useAllTime = value ?? false;
-                      });
-                    },
-                    title: const Text('导出全部时间'),
-                    dense: true,
-                    contentPadding: EdgeInsets.zero,
-                  ),
-                  const SizedBox(height: 8),
-                  OutlinedButton.icon(
-                    onPressed: _useAllTime ? null : _selectDateRange,
-                    icon: const Icon(Icons.calendar_today),
-                    label: Text(
-                      _useAllTime
-                          ? '全部时间'
-                          : (_selectedRange != null
-                                ? '${_selectedRange!.start.toLocal().toString().split(' ')[0]} 至\n${_selectedRange!.end.toLocal().toString().split(' ')[0]}'
-                                : '选择日期范围'),
-                    ),
-                    style: OutlinedButton.styleFrom(
-                      padding: const EdgeInsets.all(16),
-                      alignment: Alignment.centerLeft,
+                  _buildSettingSection(
+                    title: '通讯录备份',
+                    subtitle: '将联系人列表导出为 Excel',
+                    child: OutlinedButton.icon(
+                      onPressed: _isExportingContacts ? null : _exportContacts,
+                      icon: _isExportingContacts
+                          ? const SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.contact_page_outlined, size: 18),
+                      label: Text(_isExportingContacts ? '处理中...' : '立即导出通讯录'),
+                      style: OutlinedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(vertical: 16),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        backgroundColor: Colors.white,
+                        side: BorderSide(color: Colors.grey.shade200),
+                      ),
                     ),
                   ),
                   const SizedBox(height: 24),
-
-                  // 导出格式选择
-                  Text(
-                    '导出格式',
-                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                      fontWeight: FontWeight.w600,
+                  _buildSettingSection(
+                    title: '时间范围',
+                    subtitle: _useAllTime ? '导出所有时间的消息' : '仅导出选定日期的消息',
+                    child: Column(
+                      children: [
+                        SwitchListTile(
+                          value: _useAllTime,
+                          onChanged: (v) => setState(() => _useAllTime = v),
+                          title: const Text(
+                            '全部时间',
+                            style: TextStyle(fontSize: 14),
+                          ),
+                          contentPadding: EdgeInsets.zero,
+                          activeColor: Theme.of(context).colorScheme.primary,
+                        ),
+                        if (!_useAllTime)
+                          InkWell(
+                            onTap: _selectDateRange,
+                            borderRadius: BorderRadius.circular(12),
+                            child: Container(
+                              padding: const EdgeInsets.all(16),
+                              decoration: BoxDecoration(
+                                color: Colors.white,
+                                border: Border.all(color: Colors.grey.shade200),
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              child: Row(
+                                children: [
+                                  Icon(
+                                    Icons.calendar_today_rounded,
+                                    size: 16,
+                                    color: Colors.grey.shade600,
+                                  ),
+                                  const SizedBox(width: 12),
+                                  Text(
+                                    _selectedRange == null
+                                        ? '选择日期范围'
+                                        : '${_selectedRange!.start.toString().split(' ')[0]} 至 ${_selectedRange!.end.toString().split(' ')[0]}',
+                                    style: const TextStyle(fontSize: 13),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                      ],
                     ),
                   ),
-                  const SizedBox(height: 12),
-                  _buildFormatOption('json', 'JSON', '结构化数据格式，便于程序处理'),
-                  _buildFormatOption('html', 'HTML', '网页格式，便于浏览和分享'),
-                  _buildFormatOption('xlsx', 'Excel', '表格格式，便于数据分析'),
-                  _buildFormatOption(
-                    'sql',
-                    'PostgreSQL',
-                    '数据库格式，便于导入到 PostgreSQL 数据库中',
-                  ),
                   const SizedBox(height: 24),
+                  _buildSettingSection(
+                    title: '导出格式',
+                    child: Container(
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: Colors.grey.shade200),
+                      ),
+                      child: Column(
+                        children: [
+                          _buildFormatOption('json', 'JSON', '结构化数据，适合导入/分析'),
+                          Divider(
+                            height: 1,
+                            indent: 16,
+                            color: Colors.grey.shade100,
+                          ),
+                          _buildFormatOption('html', 'HTML', '网页格式，适合直接阅读'),
+                          Divider(
+                            height: 1,
+                            indent: 16,
+                            color: Colors.grey.shade100,
+                          ),
+                          _buildFormatOption('xlsx', 'Excel', '电子表格，适合统计分析'),
+                          Divider(
+                            height: 1,
+                            indent: 16,
+                            color: Colors.grey.shade100,
+                          ),
+                          _buildFormatOption(
+                            'sql',
+                            'PostgreSQL',
+                            '数据库脚本，便于导入到数据库',
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 40),
                 ],
               ),
             ),
           ),
-
-          // 导出按钮
-          Padding(
-            padding: const EdgeInsets.all(24),
+          Container(
+            padding: const EdgeInsets.all(32),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              border: Border(top: BorderSide(color: Colors.grey.shade100)),
+            ),
             child: SizedBox(
               width: double.infinity,
-              child: ElevatedButton.icon(
-                onPressed: _selectedSessions.isEmpty ? null : _startExport,
-                icon: const Icon(Icons.download),
-                label: const Text('开始导出'),
+              height: 54,
+              child: ElevatedButton(
+                onPressed: _startExport,
                 style: ElevatedButton.styleFrom(
-                  padding: const EdgeInsets.symmetric(vertical: 16),
-                  textStyle: const TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.bold,
+                  backgroundColor: Theme.of(context).colorScheme.primary,
+                  foregroundColor: Colors.white,
+                  elevation: 0,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(14),
                   ),
+                ),
+                child: const Text(
+                  '开始处理',
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
                 ),
               ),
             ),
@@ -1108,36 +1298,43 @@ class _ChatExportPageState extends State<ChatExportPage> {
     );
   }
 
-  Widget _buildFormatOption(String value, String label, String description) {
-    final isSelected = _selectedFormat == value;
+  Widget _buildSettingSection({
+    required String title,
+    String? subtitle,
+    required Widget child,
+  }) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          title,
+          style: const TextStyle(
+            fontSize: 14,
+            fontWeight: FontWeight.bold,
+            color: Colors.black87,
+          ),
+        ),
+        if (subtitle != null) ...[
+          const SizedBox(height: 4),
+          Text(
+            subtitle,
+            style: TextStyle(fontSize: 12, color: Colors.grey.shade500),
+          ),
+        ],
+        const SizedBox(height: 12),
+        SizedBox(width: double.infinity, child: child),
+      ],
+    );
+  }
 
+  Widget _buildFormatOption(String value, String label, String desc) {
+    final isSelected = _selectedFormat == value;
     return InkWell(
       onTap: () => setState(() => _selectedFormat = value),
-      child: Container(
-        margin: const EdgeInsets.only(bottom: 8),
-        padding: const EdgeInsets.all(12),
-        decoration: BoxDecoration(
-          color: isSelected
-              ? Theme.of(context).colorScheme.primary.withValues(alpha: 0.1)
-              : Colors.white,
-          border: Border.all(
-            color: isSelected
-                ? Theme.of(context).colorScheme.primary
-                : Colors.grey.shade300,
-            width: isSelected ? 2 : 1,
-          ),
-          borderRadius: BorderRadius.circular(8),
-        ),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
         child: Row(
           children: [
-            Icon(
-              isSelected
-                  ? Icons.radio_button_checked
-                  : Icons.radio_button_unchecked,
-              color: isSelected
-                  ? Theme.of(context).colorScheme.primary
-                  : Colors.grey.shade400,
-            ),
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -1145,21 +1342,25 @@ class _ChatExportPageState extends State<ChatExportPage> {
                   Text(
                     label,
                     style: TextStyle(
-                      fontWeight: FontWeight.w600,
-                      color: isSelected
-                          ? Theme.of(context).colorScheme.primary
-                          : null,
+                      fontSize: 14,
+                      fontWeight: isSelected
+                          ? FontWeight.bold
+                          : FontWeight.normal,
                     ),
                   ),
                   Text(
-                    description,
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: Colors.grey.shade600,
-                    ),
+                    desc,
+                    style: TextStyle(fontSize: 11, color: Colors.grey.shade500),
                   ),
                 ],
               ),
             ),
+            if (isSelected)
+              Icon(
+                Icons.check_circle_rounded,
+                size: 20,
+                color: Theme.of(context).colorScheme.primary,
+              ),
           ],
         ),
       ),
@@ -1195,12 +1396,15 @@ class _ExportProgressDialogState extends State<_ExportProgressDialog> {
   int _successCount = 0;
   int _failedCount = 0;
   int _totalMessagesProcessed = 0;
-  int _currentExportedCount = 0;
   String _currentSessionName = '';
+  String _currentStage = ''; // 当前处理阶段
   double _progress = 0.0;
   _ExportStatus _status = _ExportStatus.idle;
   String? _errorMessage;
   late int _totalSessions;
+
+  // 使用 ValueNotifier 来局部更新条数，避免重建整个 widget 导致进度条卡顿
+  final ValueNotifier<int> _exportedCountNotifier = ValueNotifier<int>(0);
 
   @override
   void initState() {
@@ -1211,6 +1415,7 @@ class _ExportProgressDialogState extends State<_ExportProgressDialog> {
 
   @override
   void dispose() {
+    _exportedCountNotifier.dispose();
     super.dispose();
   }
 
@@ -1241,7 +1446,7 @@ class _ExportProgressDialogState extends State<_ExportProgressDialog> {
       for (int i = 0; i < _totalSessions; i++) {
         final username = widget.sessions[i];
 
-        // 尝试获取显示名称：Map(UI传入) > rcontact(数据库) > chat_session(数据库) > username
+        // 尝试获取显示名称
         final sFromAll = widget.allSessions
             .where((s) => s.username == username)
             .firstOrNull;
@@ -1263,19 +1468,32 @@ class _ExportProgressDialogState extends State<_ExportProgressDialog> {
         } catch (_) {}
 
         if (!mounted) return;
-        setState(() {
-          _status = _ExportStatus.exporting;
-          _progress = -1.0; // 扫描阶段显示不确定进度条
-          _currentSessionName = displayName;
-          _currentExportedCount = 0;
-        });
 
         // 1. 扫描阶段
         List<Message> allMessages = [];
+
+        // 先获取消息总数，以便展示确定性进度条
+        int totalToScan = 0;
+        try {
+          totalToScan = await dbService.getMessageCount(username);
+        } catch (_) {}
+
+        if (!mounted) return;
+        setState(() {
+          _status = _ExportStatus.exporting;
+          _progress = totalToScan > 0 ? 0.0 : -1.0;
+          _currentSessionName = displayName;
+          _exportedCountNotifier.value = 0;
+          _currentStage = ''; // 重置状态
+        });
+
         int offset = 0;
-        const int batchSize = 5000;
+        // 动态计算批次大小：目标是将扫描过程分为约 40 步更新，
+        // 但限制在 [500, 10000] 之间以平衡查询效率与 UI 响应速度
+        final int batchSize = (totalToScan > 0)
+            ? (totalToScan / 40).floor().clamp(500, 10000)
+            : 2000;
         bool hasMore = true;
-        int batchCount = 0;
 
         while (hasMore) {
           final batch = await dbService.getMessages(
@@ -1290,7 +1508,6 @@ class _ExportProgressDialogState extends State<_ExportProgressDialog> {
             final latestInBatch = batch.first.createTime;
             final earliestInBatch = batch.last.createTime;
 
-            // 智能早停
             if (startTime != null && latestInBatch < startTime) {
               hasMore = false;
               break;
@@ -1315,61 +1532,65 @@ class _ExportProgressDialogState extends State<_ExportProgressDialog> {
 
             if (!mounted) return;
 
-            // 每处理 2 个大批次刷新一次 UI
-            batchCount++;
-            if (batchCount % 2 == 0 || !hasMore) {
+            // 更新条数通知器
+            _exportedCountNotifier.value = allMessages.length;
+
+            // 如果知道总数，则更新扫描阶段的平滑进度
+            if (totalToScan > 0) {
               setState(() {
-                _currentExportedCount = allMessages.length;
+                // 扫描阶段占该会话进度的 85%
+                _progress = (offset / totalToScan).clamp(0.0, 1.0) * 0.85;
               });
-              // 出让主线程控制权，防止 UI 卡死
-              await Future.delayed(Duration.zero);
             }
+
+            // 出让主线程控制权
+            await Future.delayed(const Duration(milliseconds: 10));
           }
-        }
-
-        // 构建或获取会话实体对象，用于导出服务
-        ChatSession? targetSession = sessions
-            .where((s) => s.username == username)
-            .firstOrNull;
-        targetSession ??= widget.allSessions
-            .where((s) => s.username == username)
-            .firstOrNull;
-
-        if (targetSession == null) {
-          // 如果实在找不到，记录失败并跳过
-          _failedCount++;
-          continue;
         }
 
         // 2. 写入阶段
         if (!mounted) return;
         setState(() {
-          _progress = (i + 0.1) / _totalSessions;
-          _currentSessionName =
-              "正在写入 $displayName (${allMessages.length} 条消息)...";
+          _progress = 0.85; // 扫描完成，进度来到 85%
+          _currentSessionName = "正在写入 $displayName...";
+          _exportedCountNotifier.value = 0;
+          _currentStage = '';
         });
 
-        // 排序
+        // 排序与导出逻辑...
         allMessages.sort((a, b) => a.createTime.compareTo(b.createTime));
         await Future.delayed(Duration.zero);
 
-        bool result = false;
+        ChatSession? targetSession = widget.allSessions
+            .where((s) => s.username == username)
+            .firstOrNull;
+        if (targetSession == null) {
+          _failedCount++;
+          continue;
+        }
+
         final safeName = displayName.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
-        final timestamp = DateTime.now().millisecondsSinceEpoch;
         final savePath =
-            '${widget.exportFolder}/${safeName}_$timestamp.${widget.format}';
+            '${widget.exportFolder}/${safeName}_${DateTime.now().millisecondsSinceEpoch}.${widget.format}';
 
-        // 设置较接近完成的进度
-        setState(() {
-          _progress = (i + 0.9) / _totalSessions;
-        });
+        void onExportProgress(int current, int total, String stage) {
+          if (!mounted) return;
+          _exportedCountNotifier.value = current;
+          if (_currentStage != stage) {
+            setState(() {
+              _currentStage = stage;
+            });
+          }
+        }
 
+        bool result = false;
         switch (widget.format) {
           case 'json':
             result = await exportService.exportToJson(
               targetSession,
               allMessages,
               filePath: savePath,
+              onProgress: onExportProgress,
             );
             break;
           case 'html':
@@ -1377,6 +1598,7 @@ class _ExportProgressDialogState extends State<_ExportProgressDialog> {
               targetSession,
               allMessages,
               filePath: savePath,
+              onProgress: onExportProgress,
             );
             break;
           case 'xlsx':
@@ -1384,6 +1606,7 @@ class _ExportProgressDialogState extends State<_ExportProgressDialog> {
               targetSession,
               allMessages,
               filePath: savePath,
+              onProgress: onExportProgress,
             );
             break;
           case 'sql':
@@ -1391,11 +1614,18 @@ class _ExportProgressDialogState extends State<_ExportProgressDialog> {
               targetSession,
               allMessages,
               filePath: savePath,
+              onProgress: onExportProgress,
             );
             break;
         }
 
         if (!mounted) return;
+
+        await logger.info(
+          'ChatExportPage',
+          '导出完成: $displayName, 结果: ${result ? "成功" : "失败"}, 路径: $savePath',
+        );
+
         setState(() {
           if (result) {
             _successCount++;
@@ -1403,7 +1633,7 @@ class _ExportProgressDialogState extends State<_ExportProgressDialog> {
           } else {
             _failedCount++;
           }
-          _progress = (i + 1.0) / _totalSessions;
+          _progress = 1.0;
         });
       }
 
@@ -1446,111 +1676,202 @@ class _ExportProgressDialogState extends State<_ExportProgressDialog> {
 
   @override
   Widget build(BuildContext context) {
-    final isCompleted = _status == _ExportStatus.completed;
-    final isError = _status == _ExportStatus.error;
-
-    // 对话框尺寸及形状
     return Dialog(
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-      backgroundColor: Colors.white,
-      elevation: 8,
+      backgroundColor: Colors.transparent,
+      elevation: 0,
       child: Container(
-        width: 500, // 为桌面端设计的固定宽度
-        padding: const EdgeInsets.all(32),
+        width: 480,
         decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(16),
           color: Colors.white,
+          borderRadius: BorderRadius.circular(24),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.15),
+              blurRadius: 32,
+              offset: const Offset(0, 12),
+            ),
+          ],
         ),
-        child: isCompleted
-            ? _buildCompletedUI()
-            : (isError ? _buildErrorUI() : _buildProgressUI()),
+        clipBehavior: Clip.antiAlias,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // 顶部条
+            Container(
+              height: 6,
+              width: double.infinity,
+              color: const Color(0xFF07C160), // 微信绿
+            ),
+            Padding(
+              padding: const EdgeInsets.all(40),
+              child: Column(
+                children: [
+                  if (_status == _ExportStatus.exporting ||
+                      _status == _ExportStatus.initializing)
+                    _buildProcessingUI()
+                  else if (_status == _ExportStatus.completed)
+                    _buildCompletedUI()
+                  else if (_status == _ExportStatus.error)
+                    _buildErrorUI(),
+                ],
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
 
-  Widget _buildProgressUI() {
+  Widget _buildProcessingUI() {
     return Column(
-      mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        // Title
-        Text(
-          '正在导出',
-          style: Theme.of(
-            context,
-          ).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.bold),
-        ),
-        const SizedBox(height: 24),
-
-        // 当前会话名称
-        Text(
-          _currentSessionName.isEmpty ? '准备中...' : _currentSessionName,
-          style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w500),
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-        ),
-        const SizedBox(height: 16),
-
-        // 状态文字：扫描中/写入中
-        Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [
-            Text(
-              _currentSessionName.contains('正在写入') ? '正在导出资源...' : '正在扫描会话...',
-              style: TextStyle(color: Colors.grey.shade600, fontSize: 13),
-            ),
-            if (_progress > 0 && _progress <= 1.0)
-              Text(
-                '${(_progress * 100).toStringAsFixed(1)}%',
-                style: const TextStyle(
-                  color: Color(0xFF07C160),
-                  fontSize: 13,
-                  fontWeight: FontWeight.bold,
+        TweenAnimationBuilder<double>(
+          tween: Tween<double>(begin: 0, end: _progress >= 0 ? _progress : 0),
+          duration: const Duration(milliseconds: 500),
+          curve: Curves.easeOutCubic,
+          builder: (context, value, _) {
+            return Stack(
+              alignment: Alignment.center,
+              children: [
+                SizedBox(
+                  width: 100,
+                  height: 100,
+                  child: CircularProgressIndicator(
+                    value: _progress >= 0 ? value : null,
+                    strokeWidth: 8,
+                    backgroundColor: Colors.grey.shade100,
+                    color: const Color(0xFF07C160),
+                    strokeCap: StrokeCap.round,
+                  ),
                 ),
-              ),
-          ],
+                if (_progress >= 0)
+                  Text(
+                    '${(value * 100).toInt()}%',
+                    style: const TextStyle(
+                      fontSize: 20,
+                      fontWeight: FontWeight.w800,
+                      color: Color(0xFF07C160),
+                    ),
+                  )
+                else
+                  const Icon(
+                    Icons.search_rounded,
+                    size: 40,
+                    color: Color(0xFF07C160),
+                  ),
+              ],
+            );
+          },
         ),
-        const SizedBox(height: 8),
-
-        // 进度条
-        ClipRRect(
-          borderRadius: BorderRadius.circular(4),
-          child: LinearProgressIndicator(
-            value: _progress <= 0 ? null : _progress,
-            minHeight: 8,
-            backgroundColor: Colors.grey.shade100,
-            valueColor: const AlwaysStoppedAnimation<Color>(Color(0xFF07C160)),
-          ),
+        const SizedBox(height: 32),
+        Text(
+          _status == _ExportStatus.initializing ? '正在初始化...' : '正在处理导出',
+          style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w800),
         ),
         const SizedBox(height: 12),
-
-        // 详情统计
-        Align(
-          alignment: Alignment.centerRight,
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          decoration: BoxDecoration(
+            color: Colors.grey.shade50,
+            borderRadius: BorderRadius.circular(12),
+          ),
           child: Text(
-            _currentSessionName.contains('正在写入')
-                ? '正在写入数据: $_currentExportedCount 条'
-                : '已扫描消息: $_currentExportedCount 条',
-            style: TextStyle(color: Colors.grey.shade500, fontSize: 12),
+            _currentSessionName,
+            style: TextStyle(
+              fontSize: 14,
+              color: Colors.grey.shade600,
+              fontWeight: FontWeight.w500,
+            ),
+            textAlign: TextAlign.center,
           ),
         ),
-        const SizedBox(height: 24),
-
-        // 统计行：已导出消息 | 剩余会话
-        Row(
-          children: [
-            _buildStatItem('已导出消息', '$_totalMessagesProcessed'),
-            Container(
-              height: 30,
-              width: 1,
-              color: Colors.grey.shade300,
-              margin: const EdgeInsets.symmetric(horizontal: 24),
+        if (_currentStage.isNotEmpty) ...[
+          const SizedBox(height: 12),
+          Text(
+            _currentStage,
+            style: TextStyle(
+              fontSize: 13,
+              color: Colors.grey.shade500,
+              fontWeight: FontWeight.w500,
             ),
-            _buildStatItem(
-              '剩余会话',
-              '${_totalSessions - (_successCount + _failedCount)}',
+            textAlign: TextAlign.center,
+          ),
+          if (_currentStage.contains('头像')) ...[
+            const SizedBox(height: 16),
+            Container(
+              margin: const EdgeInsets.symmetric(horizontal: 24),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              decoration: BoxDecoration(
+                color: const Color(0xFF07C160).withValues(alpha: 0.05),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(
+                  color: const Color(0xFF07C160).withValues(alpha: 0.1),
+                ),
+              ),
+              child: Row(
+                children: [
+                  const Icon(
+                    Icons.info_outline_rounded,
+                    size: 16,
+                    color: Color(0xFF07C160),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      '正在获取头像，群聊头像较多时可能需要一些时间，请耐心等待',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: const Color(0xFF07C160).withValues(alpha: 0.8),
+                        height: 1.4,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
             ),
           ],
+        ],
+        const SizedBox(height: 24),
+        ValueListenableBuilder<int>(
+          valueListenable: _exportedCountNotifier,
+          builder: (context, count, _) {
+            return Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                _buildStatItem(
+                  '已处理会话',
+                  '${_successCount + _failedCount + 1} / $_totalSessions',
+                ),
+                Container(
+                  width: 1,
+                  height: 24,
+                  color: Colors.grey.shade200,
+                  margin: const EdgeInsets.symmetric(horizontal: 20),
+                ),
+                Column(
+                  children: [
+                    Text(
+                      '本会话消息',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Colors.grey.shade400,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    _AnimatedCountText(
+                      count: count,
+                      style: const TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w800,
+                        color: Colors.black87,
+                      ),
+                      suffix: ' 条',
+                    ),
+                  ],
+                ),
+              ],
+            );
+          },
         ),
       ],
     );
@@ -1558,93 +1879,83 @@ class _ExportProgressDialogState extends State<_ExportProgressDialog> {
 
   Widget _buildCompletedUI() {
     return Column(
-      mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        Container(
+          padding: const EdgeInsets.all(20),
+          decoration: BoxDecoration(
+            color: const Color(0xFF07C160).withValues(alpha: 0.1),
+            shape: BoxShape.circle,
+          ),
+          child: const Icon(
+            Icons.check_rounded,
+            size: 48,
+            color: Color(0xFF07C160),
+          ),
+        ),
+        const SizedBox(height: 24),
         const Text(
           '导出完成',
-          style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+          style: TextStyle(fontSize: 22, fontWeight: FontWeight.w800),
+        ),
+        const SizedBox(height: 8),
+        Text(
+          '所有选中的会话已成功导出',
+          style: TextStyle(color: Colors.grey.shade500, fontSize: 14),
         ),
         const SizedBox(height: 32),
-
         Row(
-          children: [
-            Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                border: Border.all(color: const Color(0xFF07C160), width: 2),
-              ),
-              child: const Icon(
-                Icons.check,
-                color: Color(0xFF07C160),
-                size: 32,
-              ),
-            ),
-            const SizedBox(width: 16),
-            const Text(
-              '导出已完成',
-              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w500),
-            ),
-          ],
-        ),
-        const SizedBox(height: 32),
-
-        // 统计行
-        Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          mainAxisAlignment: MainAxisAlignment.center,
           children: [
             _buildStatItem(
               '成功',
               '$_successCount',
               valueColor: const Color(0xFF07C160),
             ),
-            Container(height: 30, width: 1, color: Colors.grey.shade300),
-            _buildStatItem(
-              '失败',
-              '$_failedCount',
-              valueColor: _failedCount > 0 ? Colors.red : null,
+            Container(
+              width: 1,
+              height: 24,
+              color: Colors.grey.shade200,
+              margin: const EdgeInsets.symmetric(horizontal: 20),
             ),
-            Container(height: 30, width: 1, color: Colors.grey.shade300),
+            _buildStatItem('失败', '$_failedCount', valueColor: Colors.red),
+            Container(
+              width: 1,
+              height: 24,
+              color: Colors.grey.shade200,
+              margin: const EdgeInsets.symmetric(horizontal: 20),
+            ),
             _buildStatItem('总消息', '$_totalMessagesProcessed'),
           ],
         ),
-        const SizedBox(height: 24),
-
-        // 文件路径
-        Text(
-          '文件位置',
-          style: TextStyle(fontSize: 12, color: Colors.grey.shade500),
-        ),
-        const SizedBox(height: 4),
-        Text(
-          widget.exportFolder,
-          style: TextStyle(fontSize: 13, color: Colors.grey.shade800),
-        ),
-
-        const SizedBox(height: 32),
+        const SizedBox(height: 40),
         Row(
-          mainAxisAlignment: MainAxisAlignment.end,
           children: [
-            TextButton(
-              onPressed: _openFolder,
-              style: TextButton.styleFrom(
-                foregroundColor: const Color(0xFF07C160),
-              ),
-              child: const Text(
-                '打开所在文件夹',
-                style: TextStyle(fontWeight: FontWeight.bold),
+            Expanded(
+              child: OutlinedButton(
+                onPressed: _openFolder,
+                style: OutlinedButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(vertical: 16),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                ),
+                child: const Text('浏览文件'),
               ),
             ),
             const SizedBox(width: 16),
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              style: TextButton.styleFrom(
-                foregroundColor: const Color(0xFF07C160),
-              ),
-              child: const Text(
-                '关闭',
-                style: TextStyle(fontWeight: FontWeight.bold),
+            Expanded(
+              child: ElevatedButton(
+                onPressed: () => Navigator.pop(context),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF07C160),
+                  foregroundColor: Colors.white,
+                  elevation: 0,
+                  padding: const EdgeInsets.symmetric(vertical: 16),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                ),
+                child: const Text('完成'),
               ),
             ),
           ],
@@ -1655,25 +1966,56 @@ class _ExportProgressDialogState extends State<_ExportProgressDialog> {
 
   Widget _buildErrorUI() {
     return Column(
-      mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Text(
-          '导出失败',
-          style: TextStyle(
-            fontSize: 20,
-            fontWeight: FontWeight.bold,
+        Container(
+          padding: const EdgeInsets.all(20),
+          decoration: BoxDecoration(
+            color: Colors.red.withValues(alpha: 0.1),
+            shape: BoxShape.circle,
+          ),
+          child: const Icon(
+            Icons.error_outline_rounded,
+            size: 48,
             color: Colors.red,
           ),
         ),
         const SizedBox(height: 24),
-        Text(_errorMessage ?? '未知错误'),
+        const Text(
+          '导出失败',
+          style: TextStyle(fontSize: 22, fontWeight: FontWeight.w800),
+        ),
+        const SizedBox(height: 12),
+        Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: Colors.red.withValues(alpha: 0.05),
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: Text(
+            _errorMessage ?? '未知错误',
+            style: const TextStyle(
+              color: Colors.red,
+              fontSize: 13,
+              height: 1.5,
+            ),
+            textAlign: TextAlign.center,
+          ),
+        ),
         const SizedBox(height: 32),
-        Align(
-          alignment: Alignment.centerRight,
-          child: TextButton(
+        SizedBox(
+          width: double.infinity,
+          child: ElevatedButton(
             onPressed: () => Navigator.pop(context),
-            child: const Text('关闭'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.grey.shade900,
+              foregroundColor: Colors.white,
+              elevation: 0,
+              padding: const EdgeInsets.symmetric(vertical: 16),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+            ),
+            child: const Text('确定'),
           ),
         ),
       ],
@@ -1682,22 +2024,46 @@ class _ExportProgressDialogState extends State<_ExportProgressDialog> {
 
   Widget _buildStatItem(String label, String value, {Color? valueColor}) {
     return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(
           label,
-          style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+          style: TextStyle(fontSize: 12, color: Colors.grey.shade400),
         ),
         const SizedBox(height: 4),
         Text(
           value,
           style: TextStyle(
-            fontSize: 20,
-            fontWeight: FontWeight.w500,
-            color: valueColor ?? Colors.black87,
+            fontSize: 16,
+            fontWeight: FontWeight.w800,
+            color: valueColor,
           ),
         ),
       ],
+    );
+  }
+}
+
+/// 内部辅助组件：带滚动动画的数字
+class _AnimatedCountText extends StatelessWidget {
+  final int count;
+  final TextStyle style;
+  final String suffix;
+
+  const _AnimatedCountText({
+    required this.count,
+    required this.style,
+    this.suffix = '',
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return TweenAnimationBuilder<double>(
+      tween: Tween<double>(begin: 0, end: count.toDouble()),
+      duration: const Duration(milliseconds: 300),
+      curve: Curves.easeOut,
+      builder: (context, value, _) {
+        return Text('${value.toInt()}$suffix', style: style);
+      },
     );
   }
 }

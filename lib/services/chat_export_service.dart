@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'dart:convert';
 import 'dart:typed_data';
+import 'package:flutter/foundation.dart';
 import 'package:syncfusion_flutter_xlsio/xlsio.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
@@ -22,13 +23,129 @@ class ChatExportService {
 
   ChatExportService(this._databaseService);
 
+  /// 后台写入字符串到文件（在 Isolate 中执行以避免阻塞 UI）
+  static bool _writeStringToFileSync(Map<String, String> params) {
+    try {
+      final file = File(params['path']!);
+      final parentDir = file.parent;
+      if (!parentDir.existsSync()) {
+        parentDir.createSync(recursive: true);
+      }
+      file.writeAsStringSync(params['content']!);
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  /// 后台写入字节到文件（在 Isolate 中执行以避免阻塞 UI）
+  static bool _writeBytesToFileSync(Map<String, dynamic> params) {
+    try {
+      final file = File(params['path'] as String);
+      final parentDir = file.parent;
+      if (!parentDir.existsSync()) {
+        parentDir.createSync(recursive: true);
+      }
+      file.writeAsBytesSync(params['bytes'] as Uint8List);
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  /// 数据大小阈值：超过此大小则直接异步写入，避免 Isolate 间传输开销
+  static const int _largeDataThreshold = 5 * 1024 * 1024; // 5MB
+
+  /// 使用 compute 在后台写入字符串文件（智能选择策略）
+  Future<bool> _writeStringInBackground(String path, String content) async {
+    final contentBytes = content.length * 2; // UTF-16 估算
+    await logger.info(
+      'ChatExportService',
+      '开始写入文件: $path, 内容大小: ${(contentBytes / (1024 * 1024)).toStringAsFixed(2)} MB',
+    );
+
+    try {
+      final file = File(path);
+      final parentDir = file.parent;
+      if (!await parentDir.exists()) {
+        await parentDir.create(recursive: true);
+      }
+
+      // 对于大数据，直接使用异步IO（dart:io 内部使用IO线程池，不会阻塞主线程）
+      // 避免 compute 序列化大数据到另一个 Isolate 的开销
+      if (contentBytes > _largeDataThreshold) {
+        await logger.info('ChatExportService', '数据较大，使用直接异步写入模式');
+        await file.writeAsString(content);
+      } else {
+        await logger.info('ChatExportService', '数据较小，使用 compute 后台写入模式');
+        final result = await compute(_writeStringToFileSync, {
+          'path': path,
+          'content': content,
+        });
+        if (!result) {
+          await logger.error('ChatExportService', '后台写入失败: $path');
+          return false;
+        }
+      }
+
+      await logger.info('ChatExportService', '文件写入完成: $path');
+      return true;
+    } catch (e, stack) {
+      await logger.error('ChatExportService', '写入文件异常: $e\n$stack');
+      return false;
+    }
+  }
+
+  /// 使用 compute 在后台写入字节文件（智能选择策略）
+  Future<bool> _writeBytesInBackground(String path, Uint8List bytes) async {
+    await logger.info(
+      'ChatExportService',
+      '开始写入字节文件: $path, 大小: ${(bytes.length / (1024 * 1024)).toStringAsFixed(2)} MB',
+    );
+
+    try {
+      final file = File(path);
+      final parentDir = file.parent;
+      if (!await parentDir.exists()) {
+        await parentDir.create(recursive: true);
+      }
+
+      // 对于大数据，直接使用异步IO
+      if (bytes.length > _largeDataThreshold) {
+        await logger.info('ChatExportService', '数据较大，使用直接异步写入模式');
+        await file.writeAsBytes(bytes);
+      } else {
+        await logger.info('ChatExportService', '数据较小，使用 compute 后台写入模式');
+        final result = await compute(_writeBytesToFileSync, {
+          'path': path,
+          'bytes': bytes,
+        });
+        if (!result) {
+          await logger.error('ChatExportService', '后台写入失败: $path');
+          return false;
+        }
+      }
+
+      await logger.info('ChatExportService', '字节文件写入完成: $path');
+      return true;
+    } catch (e, stack) {
+      await logger.error('ChatExportService', '写入字节文件异常: $e\n$stack');
+      return false;
+    }
+  }
+
   /// 导出聊天记录为 JSON 格式
+  /// [onProgress] 进度回调：(当前处理的消息数, 总消息数, 阶段描述)
   Future<bool> exportToJson(
     ChatSession session,
     List<Message> messages, {
     String? filePath,
+    void Function(int current, int total, String stage)? onProgress,
   }) async {
     try {
+      final totalMessages = messages.length;
+      onProgress?.call(0, totalMessages, '准备元数据...');
+
       // 获取联系人详细信息
       final contactInfo = await _getContactInfo(session.username);
       final senderUsernameSet = messages
@@ -57,6 +174,8 @@ class ChatExportService {
           ? await _getContactInfo(rawMyWxid)
           : <String, String>{};
       final myDisplayName = await _buildMyDisplayName(rawMyWxid, myContactInfo);
+
+      onProgress?.call(0, totalMessages, '构建头像索引...');
       final avatars = await _buildAvatarIndex(
         session: session,
         messages: messages,
@@ -66,44 +185,59 @@ class ChatExportService {
         myDisplayName: myDisplayName,
       );
 
-      final messageItems = messages.map((msg) {
-        final isSend = msg.isSend == 1;
-        final senderName = _resolveSenderDisplayName(
-          msg: msg,
-          session: session,
-          isSend: isSend,
-          contactInfo: contactInfo,
-          myContactInfo: myContactInfo,
-          senderDisplayNames: senderDisplayNames,
-          myDisplayName: myDisplayName,
-        );
-        final senderWxid = _resolveSenderUsername(
-          msg: msg,
-          session: session,
-          isSend: isSend,
-          myWxid: myWxid,
-        );
+      onProgress?.call(0, totalMessages, '处理消息数据...');
 
-        final item = <String, dynamic>{
-          'localId': msg.localId,
-          'createTime': msg.createTime,
-          'formattedTime': msg.formattedCreateTime,
-          'type': msg.typeDescription,
-          'localType': msg.localType,
-          'content': msg.displayContent,
-          'isSend': msg.isSend,
-          'senderUsername': senderWxid.isEmpty ? null : senderWxid,
-          'senderDisplayName': senderName,
-          'senderAvatarKey': senderWxid.isEmpty ? null : senderWxid,
-          'source': msg.source,
-        };
+      // 分批处理消息以显示进度
+      final messageItems = <Map<String, dynamic>>[];
+      const batchSize = 1000;
+      for (int i = 0; i < messages.length; i += batchSize) {
+        final end = (i + batchSize < messages.length)
+            ? i + batchSize
+            : messages.length;
+        for (int j = i; j < end; j++) {
+          final msg = messages[j];
+          final isSend = msg.isSend == 1;
+          final senderName = _resolveSenderDisplayName(
+            msg: msg,
+            session: session,
+            isSend: isSend,
+            contactInfo: contactInfo,
+            myContactInfo: myContactInfo,
+            senderDisplayNames: senderDisplayNames,
+            myDisplayName: myDisplayName,
+          );
+          final senderWxid = _resolveSenderUsername(
+            msg: msg,
+            session: session,
+            isSend: isSend,
+            myWxid: myWxid,
+          );
 
-        if (msg.localType == 47) {
-          item['emojiMd5'] = msg.emojiMd5;
+          final item = <String, dynamic>{
+            'localId': msg.localId,
+            'createTime': msg.createTime,
+            'formattedTime': msg.formattedCreateTime,
+            'type': msg.typeDescription,
+            'localType': msg.localType,
+            'content': msg.displayContent,
+            'isSend': msg.isSend,
+            'senderUsername': senderWxid.isEmpty ? null : senderWxid,
+            'senderDisplayName': senderName,
+            'senderAvatarKey': senderWxid.isEmpty ? null : senderWxid,
+            'source': msg.source,
+          };
+
+          if (msg.localType == 47) {
+            item['emojiMd5'] = msg.emojiMd5;
+          }
+
+          messageItems.add(item);
         }
 
-        return item;
-      }).toList();
+        // 每批处理后报告进度并让出主线程
+        onProgress?.call(end, totalMessages, '处理消息数据...');
+        await Future.delayed(Duration.zero);
+      }
 
       final data = {
         'session': {
@@ -123,7 +257,18 @@ class ChatExportService {
         'exportTime': DateTime.now().toIso8601String(),
       };
 
+      onProgress?.call(totalMessages, totalMessages, '编码 JSON...');
+      await logger.info(
+        'ChatExportService',
+        'exportToJson: 开始编码 JSON, 消息数: ${messages.length}',
+      );
+
       final jsonString = const JsonEncoder.withIndent('  ').convert(data);
+
+      await logger.info(
+        'ChatExportService',
+        'exportToJson: JSON 编码完成, 字符串长度: ${jsonString.length}',
+      );
 
       if (filePath == null) {
         final suggestedName =
@@ -136,26 +281,27 @@ class ChatExportService {
         filePath = outputFile;
       }
 
-      final file = File(filePath);
-      // 确保父目录存在
-      final parentDir = file.parent;
-      if (!await parentDir.exists()) {
-        await parentDir.create(recursive: true);
-      }
-      await file.writeAsString(jsonString);
-      return true;
-    } catch (e) {
+      onProgress?.call(totalMessages, totalMessages, '写入文件...');
+      // 使用后台 Isolate 写入文件以避免阻塞 UI
+      return await _writeStringInBackground(filePath, jsonString);
+    } catch (e, stack) {
+      await logger.error('ChatExportService', 'exportToJson 失败: $e\n$stack');
       return false;
     }
   }
 
   /// 导出聊天记录为 HTML 格式
+  /// [onProgress] 进度回调：(当前处理的消息数, 总消息数, 阶段描述)
   Future<bool> exportToHtml(
     ChatSession session,
     List<Message> messages, {
     String? filePath,
+    void Function(int current, int total, String stage)? onProgress,
   }) async {
     try {
+      final totalMessages = messages.length;
+      onProgress?.call(0, totalMessages, '准备元数据...');
+
       // 获取联系人详细信息
       final contactInfo = await _getContactInfo(session.username);
 
@@ -186,6 +332,8 @@ class ChatExportService {
           ? await _getContactInfo(rawMyWxid)
           : <String, String>{};
       final myDisplayName = await _buildMyDisplayName(rawMyWxid, myContactInfo);
+
+      onProgress?.call(0, totalMessages, '构建头像索引...');
       final avatars = await _buildAvatarIndex(
         session: session,
         messages: messages,
@@ -193,6 +341,12 @@ class ChatExportService {
         senderDisplayNames: senderDisplayNames,
         rawMyWxid: rawMyWxid,
         myDisplayName: myDisplayName,
+      );
+
+      onProgress?.call(0, totalMessages, '生成 HTML...');
+      await logger.info(
+        'ChatExportService',
+        'exportToHtml: 开始生成 HTML, 消息数: ${messages.length}',
       );
 
       final html = _generateHtml(
@@ -203,6 +357,11 @@ class ChatExportService {
         contactInfo,
         myDisplayName,
         avatars,
+      );
+
+      await logger.info(
+        'ChatExportService',
+        'exportToHtml: HTML 生成完成, 长度: ${html.length}',
       );
 
       if (filePath == null) {
@@ -216,26 +375,26 @@ class ChatExportService {
         filePath = outputFile;
       }
 
-      final file = File(filePath);
-      // 确保父目录存在
-      final parentDir = file.parent;
-      if (!await parentDir.exists()) {
-        await parentDir.create(recursive: true);
-      }
-      await file.writeAsString(html);
-      return true;
-    } catch (e) {
+      onProgress?.call(totalMessages, totalMessages, '写入文件...');
+      // 使用后台 Isolate 写入文件以避免阻塞 UI
+      return await _writeStringInBackground(filePath, html);
+    } catch (e, stack) {
+      await logger.error('ChatExportService', 'exportToHtml 失败: $e\n$stack');
       return false;
     }
   }
 
   /// 导出聊天记录为 Excel 格式
+  /// [onProgress] 进度回调：(当前处理的消息数, 总消息数, 阶段描述)
   Future<bool> exportToExcel(
     ChatSession session,
     List<Message> messages, {
     String? filePath,
+    void Function(int current, int total, String stage)? onProgress,
   }) async {
     final Workbook workbook = Workbook();
+    final totalMessages = messages.length;
+    onProgress?.call(0, totalMessages, '准备工作簿...');
     try {
       // 获取联系人详细信息
       final contactInfo = await _getContactInfo(session.username);
@@ -372,6 +531,12 @@ class ChatExportService {
         _setTextSafe(sheet, currentRow, 7, msg.typeDescription);
         _setTextSafe(sheet, currentRow, 8, msg.displayContent);
         currentRow++;
+
+        // 每 500 条报告一次进度
+        if ((i + 1) % 500 == 0 || i == messages.length - 1) {
+          onProgress?.call(i + 1, totalMessages, '处理消息数据...');
+          await Future.delayed(Duration.zero);
+        }
       }
 
       // 自动调整列宽（Syncfusion 使用 1-based 索引）
@@ -416,29 +581,31 @@ class ChatExportService {
       }
 
       // 保存工作簿为字节流
+      onProgress?.call(totalMessages, totalMessages, '保存工作簿...');
       final List<int> bytes = workbook.saveAsStream();
       workbook.dispose();
 
-      final file = File(filePath);
-      // 确保父目录存在
-      final parentDir = file.parent;
-      if (!await parentDir.exists()) {
-        await parentDir.create(recursive: true);
-      }
-      await file.writeAsBytes(Uint8List.fromList(bytes));
-      return true;
+      // 使用后台 Isolate 写入文件以避免阻塞 UI
+      onProgress?.call(totalMessages, totalMessages, '写入文件...');
+      return await _writeBytesInBackground(filePath, Uint8List.fromList(bytes));
     } catch (e) {
       workbook.dispose();
       return false;
     }
   }
 
+  /// 导出聊天记录为 PostgreSQL 格式
+  /// [onProgress] 进度回调：(当前处理的消息数, 总消息数, 阶段描述)
   Future<bool> exportToPostgreSQL(
     ChatSession session,
     List<Message> messages, {
     String? filePath,
+    void Function(int current, int total, String stage)? onProgress,
   }) async {
     try {
+      final totalMessages = messages.length;
+      onProgress?.call(0, totalMessages, '准备元数据...');
+
       // 获取联系人详细信息
       final contactInfo = await _getContactInfo(session.username);
 
@@ -471,7 +638,7 @@ class ChatExportService {
         senderContactInfos[username] = await _getContactInfo(username);
       }
 
-      // 获取当前账户的联系人信息（用于“我”发送的消息）
+      // 获取当前账户的联系人信息（用于"我"发送的消息）
       final currentAccountInfo = rawAccountWxid.isNotEmpty
           ? await _getContactInfo(rawAccountWxid)
           : <String, String>{};
@@ -488,6 +655,7 @@ class ChatExportService {
         senderContactInfos[rawAccountWxidTrimmed] = currentAccountInfo;
       }
 
+      onProgress?.call(0, totalMessages, '生成 SQL...');
       final buffer = StringBuffer();
 
       // Add DDL
@@ -545,6 +713,12 @@ class ChatExportService {
           } else {
             buffer.writeln(';');
           }
+
+          // 每 500 条报告一次进度
+          if ((i + 1) % 500 == 0 || i == messages.length - 1) {
+            onProgress?.call(i + 1, totalMessages, '生成 SQL...');
+            await Future.delayed(Duration.zero);
+          }
         }
       }
 
@@ -560,14 +734,9 @@ class ChatExportService {
         filePath = outputFile;
       }
 
-      final file = File(filePath);
-      // 确保父目录存在
-      final parentDir = file.parent;
-      if (!await parentDir.exists()) {
-        await parentDir.create(recursive: true);
-      }
-      await file.writeAsString(buffer.toString());
-      return true;
+      // 使用后台 Isolate 写入文件以避免阻塞 UI
+      onProgress?.call(totalMessages, totalMessages, '写入文件...');
+      return await _writeStringInBackground(filePath, buffer.toString());
     } catch (e) {
       return false;
     }
@@ -1296,13 +1465,11 @@ class ChatExportService {
       final List<int> bytes = workbook.saveAsStream();
       workbook.dispose();
 
-      final file = File(resolvedFilePath);
-      final parentDir = file.parent;
-      if (!await parentDir.exists()) {
-        await parentDir.create(recursive: true);
-      }
-      await file.writeAsBytes(Uint8List.fromList(bytes));
-      return true;
+      // 使用后台 Isolate 写入文件以避免阻塞 UI
+      return await _writeBytesInBackground(
+        resolvedFilePath,
+        Uint8List.fromList(bytes),
+      );
     } catch (e) {
       workbook.dispose();
       return false;

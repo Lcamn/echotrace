@@ -1954,6 +1954,28 @@ class _ChatPageState extends State<ChatPage> with TickerProviderStateMixin {
     }
   }
 
+  Widget _buildLoadMoreIndicator() {
+    return AnimatedSize(
+      duration: const Duration(milliseconds: 200),
+      curve: Curves.easeOut,
+      alignment: Alignment.topCenter,
+      child: SizedBox(
+        height: _isLoadingMoreMessages ? 28 : 0,
+        child: AnimatedOpacity(
+          duration: const Duration(milliseconds: 160),
+          opacity: _isLoadingMoreMessages ? 1 : 0,
+          child: const Center(
+            child: SizedBox(
+              width: 16,
+              height: 16,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   /// 判断消息是否为自己发送
   bool _isMessageFromMe(Message message) {
     if (message.isSystemLike) {
@@ -2416,26 +2438,13 @@ class _ChatPageState extends State<ChatPage> with TickerProviderStateMixin {
                                                 cacheExtent: 800,
                                                 addAutomaticKeepAlives: false,
                                                 itemCount:
-                                                    _messages.length +
-                                                    (_isLoadingMoreMessages
-                                                        ? 1
-                                                        : 0),
+                                                    _messages.length + 1,
                                                 itemBuilder: (context, index) {
-                                                  if (_isLoadingMoreMessages &&
-                                                      index == 0) {
-                                                    return const Padding(
-                                                      padding: EdgeInsets.only(
-                                                        bottom: 12,
-                                                      ),
-                                                      child:
-                                                          MessageLoadingShimmer(),
-                                                    );
+                                                  if (index == 0) {
+                                                    return _buildLoadMoreIndicator();
                                                   }
 
-                                                  final offset =
-                                                      _isLoadingMoreMessages
-                                                      ? 1
-                                                      : 0;
+                                                  const offset = 1;
                                                   final message =
                                                       _messages[index - offset];
 

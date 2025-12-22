@@ -82,8 +82,10 @@ class Message {
     final n = double.tryParse(input);
     if (n == null) return null;
     if (n <= 0) return null;
-    final seconds = n / 1000.0;
-    return seconds.round();
+    final isDecimal = input.contains('.');
+    final seconds = isDecimal || n <= 60 ? n : (n / 1000.0);
+    final rounded = seconds.round();
+    return rounded <= 0 ? null : rounded;
   }
 
   /// 从数据库Map创建Message对象

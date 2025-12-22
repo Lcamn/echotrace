@@ -34,6 +34,8 @@ class _VoiceMessageWidgetState extends State<VoiceMessageWidget>
   bool _isPlaying = false;
   bool _isPaused = false;
   String? _filePath;
+  int? _resolvedDurationSeconds;
+  bool _durationLoading = false;
   StreamSubscription<PlayerState>? _stateSub;
   StreamSubscription<String>? _decodeFinishedSub;
   String? _expectedOutputPath;
@@ -46,6 +48,7 @@ class _VoiceMessageWidgetState extends State<VoiceMessageWidget>
     _toast = ToastOverlay(this);
     _subscribeDecodeFinished();
     _initExisting();
+    _ensureDurationLoaded();
     _stateSub = _player.onPlayerStateChanged.listen((state) {
       if (!mounted) return;
       setState(() {
@@ -64,8 +67,59 @@ class _VoiceMessageWidgetState extends State<VoiceMessageWidget>
     }
     if (widget.message.localId != oldWidget.message.localId ||
         widget.sessionUsername != oldWidget.sessionUsername) {
+      _resolvedDurationSeconds = null;
+      _durationLoading = false;
       _subscribeDecodeFinished();
+      _ensureDurationLoaded();
     }
+  }
+
+  Future<void> _ensureDurationLoaded() async {
+    if (_durationLoading) return;
+    final existing = widget.message.voiceDurationSeconds;
+    if (existing != null && existing > 0) {
+      _resolvedDurationSeconds = existing;
+      return;
+    }
+    final derived = _durationFromDisplayContent();
+    if (derived != null && derived > 0) {
+      _resolvedDurationSeconds = derived;
+      return;
+    }
+    _durationLoading = true;
+    try {
+      final appState = context.read<AppState>();
+      final seconds =
+          await appState.voiceService.fetchDurationSeconds(widget.message);
+      if (!mounted) return;
+      if (seconds != null && seconds > 0) {
+        setState(() {
+          _resolvedDurationSeconds = seconds;
+        });
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _durationLoading = false;
+        });
+      }
+    }
+  }
+
+  int? _durationFromDisplayContent() {
+    final content = widget.message.displayContent;
+    final match = RegExp(r'语音\\s*([0-9]+(?:\\.[0-9]+)?)\\s*秒')
+        .firstMatch(content);
+    if (match == null) return null;
+    final raw = double.tryParse(match.group(1)!);
+    if (raw == null || raw <= 0) return null;
+    if (raw > 1000) return (raw / 1000).round();
+    return raw.round();
+  }
+
+  int? _validDuration(int? value) {
+    if (value == null || value <= 0) return null;
+    return value;
   }
 
   Future<void> _subscribeDecodeFinished() async {
@@ -193,7 +247,10 @@ class _VoiceMessageWidgetState extends State<VoiceMessageWidget>
 
   @override
   Widget build(BuildContext context) {
-    final duration = widget.message.voiceDurationSeconds;
+    final duration =
+        _validDuration(widget.message.voiceDurationSeconds) ??
+        _resolvedDurationSeconds ??
+        _durationFromDisplayContent();
     final durationText = duration != null && duration > 0 ? '${duration}秒' : '';
 
     final theme = Theme.of(context);
