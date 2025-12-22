@@ -30,7 +30,7 @@ EchoTrace 是一个**完全本地**的微信聊天记录导出、分析与年度
 
 ##  如何使用
 
-面向新手的使用教程见 [`使用教程`](docs/beginner_guide.md)
+面向新手的使用教程见 [此文档](docs/beginner_guide.md)
 
 ##  EchoTrace 为何而来
 
