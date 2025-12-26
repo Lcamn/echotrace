@@ -2314,6 +2314,7 @@ class _ChatPageState extends State<ChatPage> with TickerProviderStateMixin {
         final base = name.substring(0, name.length - 4);
         if (_normalizeBaseName(base) != normalized) continue;
         final variant = _detectVariant(base);
+        if (variant == _ImageVariant.original) continue;
         found[variant] ??= entity.path;
       }
     } catch (_) {}
@@ -2361,6 +2362,7 @@ class _ChatPageState extends State<ChatPage> with TickerProviderStateMixin {
         if (originalKey == null) continue;
 
         final variant = _detectVariant(base);
+        if (variant == _ImageVariant.original) continue;
         foundByName[originalKey]![variant] ??= entity.path;
       }
     } catch (_) {}
@@ -2412,13 +2414,13 @@ class _ChatPageState extends State<ChatPage> with TickerProviderStateMixin {
     if (base.endsWith('.dat') || base.endsWith('.jpg')) {
       base = base.substring(0, base.length - 4);
     }
-    for (final suffix in ['.b', '.h', '.t', '.c']) {
+    for (final suffix in ['.b', '.h', '.t', '.c', '.w', '.l']) {
       if (base.endsWith(suffix)) {
         base = base.substring(0, base.length - suffix.length);
         break;
       }
     }
-    for (final suffix in ['_b', '_h', '_t', '_c']) {
+    for (final suffix in ['_b', '_h', '_t', '_c', '_w', '_l']) {
       if (base.endsWith(suffix)) {
         base = base.substring(0, base.length - suffix.length);
         break;
@@ -2432,10 +2434,14 @@ class _ChatPageState extends State<ChatPage> with TickerProviderStateMixin {
     if (base.endsWith('.t')) return _ImageVariant.thumb;
     if (base.endsWith('.h')) return _ImageVariant.high;
     if (base.endsWith('.c')) return _ImageVariant.cache;
+    if (base.endsWith('.w')) return _ImageVariant.big;
+    if (base.endsWith('.l')) return _ImageVariant.big;
     if (base.endsWith('_b')) return _ImageVariant.big;
     if (base.endsWith('_t')) return _ImageVariant.thumb;
     if (base.endsWith('_h')) return _ImageVariant.high;
     if (base.endsWith('_c')) return _ImageVariant.cache;
+    if (base.endsWith('_w')) return _ImageVariant.big;
+    if (base.endsWith('_l')) return _ImageVariant.big;
     return _ImageVariant.original;
   }
 

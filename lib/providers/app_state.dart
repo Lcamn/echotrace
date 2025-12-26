@@ -256,6 +256,27 @@ class AppState extends ChangeNotifier {
     return 'original';
   }
 
+  bool _hasImageVariantSuffix(String baseLower) {
+    const suffixes = [
+      '.b',
+      '.h',
+      '.t',
+      '.c',
+      '.w',
+      '.l',
+      '_b',
+      '_h',
+      '_t',
+      '_c',
+      '_w',
+      '_l',
+    ];
+    for (final suffix in suffixes) {
+      if (baseLower.endsWith(suffix)) return true;
+    }
+    return false;
+  }
+
   Future<void> _scanImagePath(String basePath, String documentsPath, {String? manualWxid}) async {
     final baseDir = Directory(basePath);
     if (!await baseDir.exists()) {
@@ -314,6 +335,8 @@ class AppState extends ChangeNotifier {
           if (filePath.contains('db_storage') || filePath.contains('database')) continue;
 
           final fileName = entity.path.split(Platform.pathSeparator).last;
+          final baseLower = p.basenameWithoutExtension(fileName).toLowerCase();
+          if (!_hasImageVariantSuffix(baseLower)) continue;
 
           try {
             final fileSize = await entity.length();
