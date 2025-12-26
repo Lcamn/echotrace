@@ -297,7 +297,8 @@ class DatabaseService {
   Database? get _currentDb => _sessionDb;
 
   /// 获取会话列表
-  Future<List<ChatSession>> getSessions({int limit = 400}) async {
+  /// [limit] 为 null 时不限制数量，默认不限制以支持完整导出
+  Future<List<ChatSession>> getSessions({int? limit}) async {
     // 实时模式：通过 WCDB DLL 获取会话
     if (_mode == DatabaseMode.realtime && _wcdbHandle != null) {
       try {
@@ -413,12 +414,12 @@ class DatabaseService {
         }
       }
 
-      await logger.info('DatabaseService', '从表 $sessionTableName 查询会话');
+      await logger.info('DatabaseService', '从表 $sessionTableName 查询会话${limit != null ? '（限制 $limit 条）' : '（无限制）'}');
 
       final List<Map<String, dynamic>> maps = await db.query(
         sessionTableName,
         orderBy: 'sort_timestamp DESC',
-        limit: limit,
+        limit: limit,  // null 表示不限制
       );
 
       await logger.info('DatabaseService', '查询到 ${maps.length} 条原始会话记录');
