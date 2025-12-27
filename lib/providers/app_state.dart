@@ -100,6 +100,15 @@ class AppState extends ChangeNotifier {
   bool get imageScanCompleted => _imageScanCompleted;
   Map<String, String> get imageDisplayNameCache => _imageDisplayNameCache;
 
+  Future<void> ensureImageDisplayNameCache() async {
+    if (_imageDisplayNameCache.isNotEmpty) return;
+    await _prepareImageDisplayNameCache();
+  }
+
+  String applyImageDisplayNameToRelativePath(String relativePath) {
+    return _applyDisplayNameToRelativePath(relativePath);
+  }
+
   /// 开始图片扫描（后台执行）
   Future<void> startImageScan({bool forceRescan = false}) async {
     if (_isLoadingImages) {
@@ -793,11 +802,22 @@ class AppState extends ChangeNotifier {
 
       final manualWxid = await configService.getManualWxid();
       final normalizedManual = _normalizeWxid(manualWxid);
+      await logger.info(
+        'AppState',
+        '配置wxid=$manualWxid, normalized=$normalizedManual, 根目录=${echoTraceDir.path}',
+      );
       if (normalizedManual != null && normalizedManual.isNotEmpty) {
-        final filtered = accountDirs.where((entity) {
+        final filtered = <FileSystemEntity>[];
+        for (final entity in accountDirs) {
           final name = entity.path.split(Platform.pathSeparator).last;
-          return _normalizeWxid(name) == normalizedManual;
-        }).toList();
+          await logger.debug(
+            'AppState',
+            '候选账号目录: $name -> normalized=${_normalizeWxid(name)}',
+          );
+          if (_normalizeWxid(name) == normalizedManual) {
+            filtered.add(entity);
+          }
+        }
         if (filtered.isNotEmpty) {
           accountDirs = filtered;
           await logger.info(
@@ -827,10 +847,20 @@ class AppState extends ChangeNotifier {
       for (final accountEntity in accountDirs) {
         final accountDir = accountEntity as Directory;
 
-        // 获取目录下所有 .db 文件
-        final dbFiles = await accountDir.list().where((entity) {
-          return entity is File && entity.path.endsWith('.db');
-        }).toList();
+        await logger.info('AppState', '检查账号目录: ${accountDir.path}');
+
+        // 获取目录下所有 .db 文件（递归）
+        final dbFiles = await _findAllDbFilesRecursively(accountDir);
+        if (dbFiles.isNotEmpty) {
+          final sample = dbFiles
+              .take(5)
+              .map((f) => f.path.split(Platform.pathSeparator).last)
+              .join(', ');
+          await logger.info(
+            'AppState',
+            '在账号目录发现 ${dbFiles.length} 个 .db 文件，样例: $sample',
+          );
+        }
 
         if (dbFiles.isEmpty) {
           continue;
@@ -960,10 +990,16 @@ class AppState extends ChangeNotifier {
     if (value == null) return null;
     final trimmed = value.trim();
     if (trimmed.isEmpty) return null;
-    final legacyMatch =
-        RegExp(r'^(wxid_[a-z0-9]+)(?:_\d+)?$', caseSensitive: false)
-            .firstMatch(trimmed);
-    if (legacyMatch != null) return legacyMatch.group(1)!.toLowerCase();
+    if (!trimmed.toLowerCase().startsWith('wxid_')) {
+      final suffixMatch =
+          RegExp(r'^(.+)_([a-zA-Z0-9]{4})$').firstMatch(trimmed);
+      if (suffixMatch != null) return suffixMatch.group(1);
+      return trimmed;
+    }
+
+    final match =
+        RegExp(r'^(wxid_[^_]+)', caseSensitive: false).firstMatch(trimmed);
+    if (match != null) return match.group(1)!.toLowerCase();
     return trimmed.toLowerCase();
   }
 

@@ -148,21 +148,22 @@ class WxidScanService {
     return roots;
   }
 
-  /// 纠正 wxid 目录名，去掉末尾的 _数字 后缀
+  /// 纠正 wxid 目录名，去掉末尾的后缀
   String? _normalizeWxid(String name) {
     final trimmed = name.trim();
     if (trimmed.isEmpty) return null;
 
-    // 兼容旧版目录：wxid_xxx 或 wxid_xxx_123 -> wxid_xxx
-    final legacyMatch = RegExp(
-      r'^(wxid_[a-z0-9]+)(?:_\d+)?$',
-      caseSensitive: false,
-    ).firstMatch(trimmed);
-    if (legacyMatch != null) {
-      return legacyMatch.group(1);
+    if (trimmed.toLowerCase().startsWith('wxid_')) {
+      final match = RegExp(r'^(wxid_[^_]+)', caseSensitive: false)
+          .firstMatch(trimmed);
+      if (match != null) return match.group(1);
+      return trimmed;
     }
 
-    // 其他账号名称直接返回原始目录名
+    final suffixMatch =
+        RegExp(r'^(.+)_([a-zA-Z0-9]{4})$').firstMatch(trimmed);
+    if (suffixMatch != null) return suffixMatch.group(1);
+
     return trimmed;
   }
 }

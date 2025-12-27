@@ -263,16 +263,17 @@ class _DataManagementPageState extends State<DataManagementPage> {
     final trimmed = dirName.trim();
     if (trimmed.isEmpty) return trimmed;
 
-    // 兼容旧版 wxid_xxx_123 目录，去掉尾部数字
-    final legacyMatch = RegExp(
-      r'^(wxid_[a-zA-Z0-9]+)(?:_\d+)?$',
-      caseSensitive: false,
-    ).firstMatch(trimmed);
-    if (legacyMatch != null) {
-      return legacyMatch.group(1)!;
+    if (trimmed.toLowerCase().startsWith('wxid_')) {
+      final match = RegExp(r'^(wxid_[^_]+)', caseSensitive: false)
+          .firstMatch(trimmed);
+      if (match != null) return match.group(1)!;
+      return trimmed;
     }
 
-    // 其他命名直接返回
+    final suffixMatch =
+        RegExp(r'^(.+)_([a-zA-Z0-9]{4})$').firstMatch(trimmed);
+    if (suffixMatch != null) return suffixMatch.group(1)!;
+
     return trimmed;
   }
 
@@ -280,10 +281,16 @@ class _DataManagementPageState extends State<DataManagementPage> {
     if (value == null) return null;
     final trimmed = value.trim();
     if (trimmed.isEmpty) return null;
-    final legacyMatch =
-        RegExp(r'^(wxid_[a-zA-Z0-9]+)(?:_\d+)?$', caseSensitive: false)
-            .firstMatch(trimmed);
-    if (legacyMatch != null) return legacyMatch.group(1)!.toLowerCase();
+    if (!trimmed.toLowerCase().startsWith('wxid_')) {
+      final suffixMatch =
+          RegExp(r'^(.+)_([a-zA-Z0-9]{4})$').firstMatch(trimmed);
+      if (suffixMatch != null) return suffixMatch.group(1);
+      return trimmed;
+    }
+
+    final match =
+        RegExp(r'^(wxid_[^_]+)', caseSensitive: false).firstMatch(trimmed);
+    if (match != null) return match.group(1)!.toLowerCase();
     return trimmed.toLowerCase();
   }
 

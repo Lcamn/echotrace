@@ -9,7 +9,6 @@ import '../providers/app_state.dart';
 import '../services/config_service.dart';
 import '../services/decrypt_service.dart';
 import '../services/annual_report_cache_service.dart';
-import '../services/dual_report_cache_service.dart';
 import '../services/database_service.dart';
 import '../services/logger_service.dart';
 import '../services/wxid_scan_service.dart';
@@ -1543,7 +1542,7 @@ class _SettingsPageState extends State<SettingsPage>
                       ),
                       const SizedBox(height: 4),
                       Text(
-                        '管理报告缓存数据',
+                        '管理年度报告缓存数据',
                         style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                           color: Theme.of(
                             context,
@@ -1557,7 +1556,7 @@ class _SettingsPageState extends State<SettingsPage>
             ),
             const SizedBox(height: 24),
 
-            // 清除年度报告缓存按钮
+            // 清除缓存按钮
             SizedBox(
               width: double.infinity,
               child: OutlinedButton(
@@ -1571,23 +1570,6 @@ class _SettingsPageState extends State<SettingsPage>
                   side: const BorderSide(color: Colors.red),
                 ),
                 child: const Text('清除年度报告缓存'),
-              ),
-            ),
-            const SizedBox(height: 12),
-            // 清除双人报告缓存按钮
-            SizedBox(
-              width: double.infinity,
-              child: OutlinedButton(
-                onPressed: () => _showClearDualReportCacheDialog(),
-                style: OutlinedButton.styleFrom(
-                  padding: const EdgeInsets.symmetric(vertical: 16),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  foregroundColor: Colors.red,
-                  side: const BorderSide(color: Colors.red),
-                ),
-                child: const Text('清除双人报告缓存'),
               ),
             ),
           ],
@@ -1688,121 +1670,6 @@ class _SettingsPageState extends State<SettingsPage>
                 ScaffoldMessenger.of(context).showSnackBar(
                   SnackBar(
                     content: const Text('已清除所有缓存'),
-                    backgroundColor: Colors.green,
-                    behavior: SnackBarBehavior.floating,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                  ),
-                );
-              }
-            },
-            style: FilledButton.styleFrom(
-              backgroundColor: Colors.red,
-              foregroundColor: Colors.white,
-            ),
-            child: const Text('确认清除'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Future<void> _showClearDualReportCacheDialog() async {
-    final cacheInfo = await DualReportCacheService.getCacheInfo();
-    final cacheCount = cacheInfo['count'] as int;
-
-    if (!mounted) return;
-
-    if (cacheCount == 0) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('暂无双人报告缓存数据'), backgroundColor: Colors.orange),
-      );
-      return;
-    }
-
-    final cachedKeys = cacheInfo['keys'] as List<String>;
-    final keysList = cachedKeys.join('\n');
-
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: Row(children: [const Text('清除双人报告缓存')]),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              '确定要清除所有双人报告缓存吗？',
-              style: Theme.of(
-                context,
-              ).textTheme.bodyLarge?.copyWith(fontWeight: FontWeight.w500),
-            ),
-            const SizedBox(height: 16),
-            Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: Theme.of(
-                  context,
-                ).colorScheme.surfaceContainerHighest.withValues(alpha: 0.5),
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      Text(
-                        '已缓存 $cacheCount 个双人报告',
-                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: Theme.of(
-                            context,
-                          ).colorScheme.onSurface.withValues(alpha: 0.6),
-                          fontWeight: FontWeight.w500,
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 8),
-                  if (cachedKeys.isNotEmpty)
-                    Text(
-                      keysList,
-                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        color: Theme.of(
-                          context,
-                        ).colorScheme.onSurface.withValues(alpha: 0.5),
-                        fontFamily: 'monospace',
-                        fontSize: 10,
-                      ),
-                      maxLines: 5,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 12),
-            Text(
-              '清除后需要重新生成报告',
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.6),
-              ),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () async {
-              await DualReportCacheService.clearAllReports();
-              if (context.mounted) {
-                Navigator.pop(context);
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(
-                    content: const Text('已清除所有双人报告缓存'),
                     backgroundColor: Colors.green,
                     behavior: SnackBarBehavior.floating,
                     shape: RoundedRectangleBorder(

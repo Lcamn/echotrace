@@ -73,6 +73,11 @@ class _ImageMessageWidgetState extends State<ImageMessageWidget> {
   ];
   static bool _indexed = false;
   static Future<void>? _indexing;
+  static bool _refreshingIndex = false;
+  static DateTime? _lastRefreshAttemptAt;
+  static final ImageService _sharedImageService = ImageService();
+  static Future<void>? _sharedImageInit;
+  static String? _sharedImageDataPath;
 
   @override
   void initState() {
@@ -86,15 +91,23 @@ class _ImageMessageWidgetState extends State<ImageMessageWidget> {
     try {
       _datName = widget.message.imageDatName;
       final appState = context.read<AppState>();
-      final imageService = ImageService();
+      final imageService = await _getSharedImageService(appState);
+      if (imageService == null) {
+        if (mounted) {
+          setState(() {
+            _isLoading = false;
+            _hasError = true;
+            _statusMessage = '未获取到数据目录，无法加载图片';
+          });
+        }
+        return;
+      }
       // 预取会话展示名用于路径美化
       await _loadDisplayName(appState);
 
       // 初始化图片服务
       final dataPath = appState.databaseService.currentDataPath;
       if (dataPath != null) {
-        await imageService.init(dataPath);
-
         // 获取图片路径
         if (widget.message.imageMd5 != null) {
           final path = await imageService.getImagePath(
@@ -105,11 +118,11 @@ class _ImageMessageWidgetState extends State<ImageMessageWidget> {
           // 如果硬链表未命中，尝试已解密文件
           if (path == null) {
             String? decodedPath =
-                await _findDecryptedImageByName(_datName, refresh: true);
+                await _findDecryptedImageByName(_datName, refresh: false);
             if (decodedPath == null && widget.message.imageMd5 != null) {
               decodedPath = await _findDecryptedImageByName(
                 widget.message.imageMd5,
-                refresh: true,
+                refresh: false,
               );
             }
             _logDebugPaths(decodedPath);
@@ -131,11 +144,11 @@ class _ImageMessageWidgetState extends State<ImageMessageWidget> {
         } else {
           // 仅 packed_info_data 的情况
           String? decodedPath =
-              await _findDecryptedImageByName(_datName, refresh: true);
+              await _findDecryptedImageByName(_datName, refresh: false);
           if (decodedPath == null && widget.message.imageMd5 != null) {
             decodedPath = await _findDecryptedImageByName(
               widget.message.imageMd5,
-              refresh: true,
+              refresh: false,
             );
           }
           _logDebugPaths(decodedPath);
@@ -148,7 +161,6 @@ class _ImageMessageWidgetState extends State<ImageMessageWidget> {
           }
         }
 
-        await imageService.dispose();
       } else {
         if (mounted) {
           setState(() {
@@ -386,6 +398,14 @@ class _ImageMessageWidgetState extends State<ImageMessageWidget> {
     if (resolved != null || !refresh) return resolved;
 
     if (_shouldRefreshIndex()) {
+      if (_refreshingIndex) {
+        return _resolveFromIndex(key);
+      }
+      if (_lastRefreshAttemptAt != null &&
+          DateTime.now().difference(_lastRefreshAttemptAt!) <
+              _indexRefreshCooldown) {
+        return _resolveFromIndex(key);
+      }
       await _rebuildDecryptedIndex();
       return _resolveFromIndex(key);
     }
@@ -441,9 +461,16 @@ class _ImageMessageWidgetState extends State<ImageMessageWidget> {
   }
 
   Future<void> _rebuildDecryptedIndex() async {
+    if (_refreshingIndex) return;
+    _refreshingIndex = true;
+    _lastRefreshAttemptAt = DateTime.now();
     _indexed = false;
     _indexing = null;
-    await _ensureDecryptedIndex();
+    try {
+      await _ensureDecryptedIndex();
+    } finally {
+      _refreshingIndex = false;
+    }
   }
 
   Future<T> _withDecodePermit<T>(Future<T> Function() action) async {
@@ -529,6 +556,21 @@ class _ImageMessageWidgetState extends State<ImageMessageWidget> {
     return base;
   }
 
+  Future<ImageService?> _getSharedImageService(AppState appState) async {
+    final dataPath = appState.databaseService.currentDataPath;
+    if (dataPath == null || dataPath.isEmpty) return null;
+
+    if (_sharedImageDataPath != dataPath) {
+      await _sharedImageService.dispose();
+      _sharedImageDataPath = dataPath;
+      _sharedImageInit = null;
+    }
+
+    _sharedImageInit ??= _sharedImageService.init(dataPath);
+    await _sharedImageInit;
+    return _sharedImageService;
+  }
+
   _ImageVariant _detectVariant(String base) {
     if (base.endsWith('.b')) return _ImageVariant.big;
     if (base.endsWith('.t')) return _ImageVariant.thumb;
@@ -609,6 +651,8 @@ class _ImageMessageWidgetState extends State<ImageMessageWidget> {
         return;
       }
 
+      await appState.ensureImageDisplayNameCache();
+
       final cachedDecoded =
           await _findDecryptedImageByName(_datName, refresh: true);
       final cachedByMd5 = cachedDecoded == null &&
@@ -683,7 +727,7 @@ class _ImageMessageWidgetState extends State<ImageMessageWidget> {
           } else if (!lowerRel.endsWith('.jpg')) {
             relative = '$relative.jpg';
           }
-          relative = _applyDisplayNameToRelative(relative);
+          relative = appState.applyImageDisplayNameToRelativePath(relative);
         }
 
         final outPath = p.join(imagesRoot.path, relative);
@@ -820,17 +864,5 @@ class _ImageMessageWidgetState extends State<ImageMessageWidget> {
     return sanitized;
   }
 
-  String _applyDisplayNameToRelative(String relativePath) {
-    if (_displayName == null) return relativePath;
-    final sep = Platform.pathSeparator;
-    final parts = relativePath.split(sep).where((p) => p.isNotEmpty).toList();
-    final attachIdx = parts.indexWhere((p) => p.toLowerCase() == 'attach');
-    if (attachIdx != -1 && attachIdx + 1 < parts.length) {
-      parts[attachIdx + 1] = _displayName!;
-      return (relativePath.startsWith(sep) ? sep : '') + parts.join(sep);
-    }
-    // 若没有 attach 段，则在最前添加展示名
-    parts.insert(0, _displayName!);
-    return (relativePath.startsWith(sep) ? sep : '') + parts.join(sep);
-  }
+  // 路径映射统一由 AppState 处理
 }

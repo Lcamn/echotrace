@@ -165,7 +165,6 @@ class _ChatPageState extends State<ChatPage> with TickerProviderStateMixin {
   bool _isJumpingToDate = false;
   final ImageDecryptService _imageDecryptService = ImageDecryptService();
   final Map<String, List<String>> _datPathCache = {};
-  String? _imageDisplayNameForPath;
   Set<String> _availableMessageDates = {};
   List<DateTime> _availableMessageDateList = [];
   DateTime? _availableStartDate;
@@ -328,7 +327,6 @@ class _ChatPageState extends State<ChatPage> with TickerProviderStateMixin {
     _isLoadingSessionDetail = false;
     _sessionDetailForSession = null;
     _datPathCache.clear();
-    _imageDisplayNameForPath = null;
     _jumpTargetDate = null;
     _isJumpingToDate = false;
     _availableMessageDates = {};
@@ -2149,7 +2147,7 @@ class _ChatPageState extends State<ChatPage> with TickerProviderStateMixin {
       if (!await imagesRoot.exists()) {
         await imagesRoot.create(recursive: true);
       }
-      await _prepareImageDisplayName(_selectedSession!);
+      await appState.ensureImageDisplayNameCache();
 
       // 预先建立 dat 文件索引：避免每张图片都递归扫描 accountDir。
       await _primeDatPathCache(
@@ -2474,37 +2472,9 @@ class _ChatPageState extends State<ChatPage> with TickerProviderStateMixin {
     }
   }
 
-  Future<void> _prepareImageDisplayName(ChatSession session) async {
-    try {
-      final names = await context
-          .read<AppState>()
-          .databaseService
-          .getDisplayNames([session.username]);
-      final name = names[session.username];
-      if (name != null && name.trim().isNotEmpty) {
-        _imageDisplayNameForPath = _sanitizeSegment(name);
-      }
-    } catch (_) {}
-  }
-
-  String _sanitizeSegment(String name) {
-    var sanitized = name.replaceAll(RegExp(r'[<>:"/\\\\|?*]'), '_').trim();
-    if (sanitized.isEmpty) return '未知联系人';
-    if (sanitized.length > 60) sanitized = sanitized.substring(0, 60);
-    return sanitized;
-  }
-
   String _applyDisplayNameToRelative(String relativePath) {
-    if (_imageDisplayNameForPath == null) return relativePath;
-    final sep = Platform.pathSeparator;
-    final parts = relativePath.split(sep).where((p) => p.isNotEmpty).toList();
-    final attachIdx = parts.indexWhere((p) => p.toLowerCase() == 'attach');
-    if (attachIdx != -1 && attachIdx + 1 < parts.length) {
-      parts[attachIdx + 1] = _imageDisplayNameForPath!;
-      return (relativePath.startsWith(sep) ? sep : '') + parts.join(sep);
-    }
-    parts.insert(0, _imageDisplayNameForPath!);
-    return (relativePath.startsWith(sep) ? sep : '') + parts.join(sep);
+    final appState = context.read<AppState>();
+    return appState.applyImageDisplayNameToRelativePath(relativePath);
   }
 
   void _ensureSessionDetailLoaded() {
