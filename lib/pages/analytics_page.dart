@@ -39,6 +39,7 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
 
   // Top N 选择
   int _topN = 10;
+  bool _showAnnualReportSubPage = false;
   bool _showDualReportSubPage = false;
 
   @override
@@ -406,7 +407,14 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
               switchOutCurve: Curves.easeIn,
               child: _isLoading
                   ? _buildLoadingView()
-                  : _showDualReportSubPage
+                  : _showAnnualReportSubPage
+                      ? _AnnualReportSubPage(
+                          databaseService: widget.databaseService,
+                          onClose: () {
+                            setState(() => _showAnnualReportSubPage = false);
+                          },
+                        )
+                      : _showDualReportSubPage
                       ? _DualReportSubPage(
                           databaseService: widget.databaseService,
                           rankings: _allContactRankings ?? const <ContactRanking>[],
@@ -615,30 +623,7 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
         onTap: _isLoading
             ? null
             : () async {
-                // 显示加载状态
-                setState(() {
-                  _isLoading = true;
-                  _loadingStatus = '正在准备年度报告...';
-                });
-
-                try {
-                  await Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                      builder: (context) => AnnualReportDisplayPage(
-                        databaseService: widget.databaseService,
-                      ),
-                    ),
-                  );
-                } finally {
-                  // 隐藏加载状态
-                  if (mounted) {
-                    setState(() {
-                      _isLoading = false;
-                      _loadingStatus = '';
-                    });
-                  }
-                }
+                setState(() => _showAnnualReportSubPage = true);
               },
         borderRadius: BorderRadius.circular(12),
         child: Container(
@@ -1091,6 +1076,60 @@ class _AvatarWithRank extends StatelessWidget {
           ),
         ),
       ],
+    );
+  }
+}
+
+class _AnnualReportSubPage extends StatelessWidget {
+  final DatabaseService databaseService;
+  final VoidCallback onClose;
+
+  const _AnnualReportSubPage({
+    required this.databaseService,
+    required this.onClose,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        _buildHeader(context),
+        Expanded(
+          child: AnnualReportDisplayPage(
+            databaseService: databaseService,
+            showAppBar: false,
+            onClose: onClose,
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildHeader(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        border: Border(
+          bottom: BorderSide(color: Colors.grey.withValues(alpha: 0.1)),
+        ),
+      ),
+      child: Row(
+        children: [
+          IconButton(
+            onPressed: onClose,
+            icon: const Icon(Icons.arrow_back),
+            tooltip: '返回数据分析',
+          ),
+          const SizedBox(width: 4),
+          Text(
+            '年度报告',
+            style: Theme.of(context).textTheme.titleLarge?.copyWith(
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

@@ -15,11 +15,15 @@ import '../services/logger_service.dart';
 class AnnualReportDisplayPage extends StatefulWidget {
   final DatabaseService databaseService;
   final int? year;
+  final bool showAppBar;
+  final VoidCallback? onClose;
 
   const AnnualReportDisplayPage({
     super.key,
     required this.databaseService,
     this.year,
+    this.showAppBar = true,
+    this.onClose,
   });
 
   @override
@@ -621,7 +625,8 @@ class _AnnualReportDisplayPageState extends State<AnnualReportDisplayPage> {
                       ),
                       const SizedBox(height: 16),
                       TextButton(
-                        onPressed: () => Navigator.of(context).pop(),
+                        onPressed:
+                            widget.onClose ?? () => Navigator.of(context).pop(),
                         style: TextButton.styleFrom(
                           foregroundColor: Colors.grey,
                         ),
@@ -730,7 +735,7 @@ class _AnnualReportDisplayPageState extends State<AnnualReportDisplayPage> {
       ),
       child: Scaffold(
         backgroundColor: Colors.white,
-        appBar: AppBar(
+        appBar: widget.showAppBar ? AppBar(
           title: Text(
             '$yearText年度报告',
             style: const TextStyle(fontFamily: 'HarmonyOS Sans SC'),
@@ -738,7 +743,7 @@ class _AnnualReportDisplayPageState extends State<AnnualReportDisplayPage> {
           backgroundColor: Colors.white,
           elevation: 0,
           foregroundColor: Colors.black87,
-        ),
+        ) : null,
         body: Center(
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
@@ -803,7 +808,7 @@ class _AnnualReportDisplayPageState extends State<AnnualReportDisplayPage> {
       ),
       child: Scaffold(
         backgroundColor: Colors.white,
-        appBar: AppBar(
+        appBar: widget.showAppBar ? AppBar(
           title: Text(
             '生成$yearText年度报告',
             style: const TextStyle(fontFamily: 'HarmonyOS Sans SC'),
@@ -811,7 +816,7 @@ class _AnnualReportDisplayPageState extends State<AnnualReportDisplayPage> {
           backgroundColor: Colors.white,
           elevation: 0,
           foregroundColor: Colors.black87,
-        ),
+        ) : null,
         body: Center(
           child: Padding(
             padding: const EdgeInsets.all(32),
