@@ -104,8 +104,14 @@ class _ImageMessageWidgetState extends State<ImageMessageWidget> {
 
           // 如果硬链表未命中，尝试已解密文件
           if (path == null) {
-            final decodedPath =
+            String? decodedPath =
                 await _findDecryptedImageByName(_datName, refresh: true);
+            if (decodedPath == null && widget.message.imageMd5 != null) {
+              decodedPath = await _findDecryptedImageByName(
+                widget.message.imageMd5,
+                refresh: true,
+              );
+            }
             _logDebugPaths(decodedPath);
             if (mounted) {
               setState(() {
@@ -124,8 +130,14 @@ class _ImageMessageWidgetState extends State<ImageMessageWidget> {
           }
         } else {
           // 仅 packed_info_data 的情况
-          final decodedPath =
+          String? decodedPath =
               await _findDecryptedImageByName(_datName, refresh: true);
+          if (decodedPath == null && widget.message.imageMd5 != null) {
+            decodedPath = await _findDecryptedImageByName(
+              widget.message.imageMd5,
+              refresh: true,
+            );
+          }
           _logDebugPaths(decodedPath);
           if (mounted) {
             setState(() {
@@ -597,6 +609,27 @@ class _ImageMessageWidgetState extends State<ImageMessageWidget> {
         return;
       }
 
+      final cachedDecoded =
+          await _findDecryptedImageByName(_datName, refresh: true);
+      final cachedByMd5 = cachedDecoded == null &&
+              widget.message.imageMd5 != null
+          ? await _findDecryptedImageByName(
+              widget.message.imageMd5,
+              refresh: true,
+            )
+          : null;
+      final cachedPath = cachedDecoded ?? cachedByMd5;
+      if (cachedPath != null && await _isImageUsable(cachedPath)) {
+        if (mounted) {
+          setState(() {
+            _imagePath = cachedPath;
+            _hasError = false;
+            _statusMessage = null;
+          });
+        }
+        return;
+      }
+
       final datCandidates =
           await _searchDatFiles(accountDir, _datName!.toLowerCase());
       if (datCandidates.isEmpty) {
@@ -657,6 +690,14 @@ class _ImageMessageWidgetState extends State<ImageMessageWidget> {
         final outParent = Directory(p.dirname(outPath));
         if (!await outParent.exists()) {
           await outParent.create(recursive: true);
+        }
+
+        final existingFile = File(outPath);
+        if (await existingFile.exists() && await _isImageUsable(outPath)) {
+          validOutput = outPath;
+          usedFallback = usedFallback || datPath != datCandidates.first;
+          _rememberDecryptedFile(outPath);
+          break;
         }
 
         try {

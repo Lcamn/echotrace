@@ -389,13 +389,15 @@ class CliExportRunner {
       _cancelled = true;
       _logError('收到 Ctrl+C/SIGINT，准备中止...');
     });
-    try {
-      _sigTermSub = ProcessSignal.sigterm.watch().listen((_) {
-        _cancelled = true;
-        _logError('收到 SIGTERM，准备中止...');
-      });
-    } catch (_) {
-      // Windows 可能不支持 SIGTERM，忽略
+    if (!Platform.isWindows) {
+      try {
+        _sigTermSub = ProcessSignal.sigterm.watch().listen((_) {
+          _cancelled = true;
+          _logError('收到 SIGTERM，准备中止...');
+        });
+      } catch (_) {
+        // SIGTERM 可能不支持，忽略
+      }
     }
   }
 
