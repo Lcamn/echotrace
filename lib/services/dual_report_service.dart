@@ -1,9 +1,58 @@
+import 'dart:isolate';
+import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'database_service.dart';
 import '../models/contact_record.dart';
 import '../models/contact.dart';
 
 typedef DualReportProgressCallback =
     Future<void> Function(String taskName, String status, int progress);
+
+@pragma('vm:entry-point')
+void dualReportIsolateEntry(Map<String, dynamic> message) async {
+  final sendPort = message['sendPort'] as SendPort;
+  DatabaseService? databaseService;
+  try {
+    final dbPath = message['dbPath'] as String?;
+    final friendUsername = message['friendUsername'] as String?;
+    final filterYear = message['filterYear'] as int?;
+    final manualWxid = message['manualWxid'] as String?;
+    if (dbPath == null || dbPath.isEmpty || friendUsername == null) {
+      throw StateError('invalid isolate params');
+    }
+
+    databaseService = DatabaseService();
+    await databaseService.initialize(factory: databaseFactoryFfi);
+    if (manualWxid != null && manualWxid.isNotEmpty) {
+      databaseService.setManualWxid(manualWxid);
+    }
+    await databaseService.connectDecryptedDatabase(
+      dbPath,
+      factory: databaseFactoryFfi,
+    );
+
+    final service = DualReportService(databaseService);
+    final reportData = await service.generateDualReport(
+      friendUsername: friendUsername,
+      filterYear: filterYear,
+      onProgress: (taskName, status, progress) async {
+        sendPort.send({
+          'type': 'progress',
+          'taskName': taskName,
+          'status': status,
+          'progress': progress,
+        });
+      },
+    );
+
+    sendPort.send({'type': 'done', 'data': reportData});
+  } catch (e) {
+    sendPort.send({'type': 'error', 'message': e.toString()});
+  } finally {
+    try {
+      await databaseService?.close();
+    } catch (_) {}
+  }
+}
 
 /// 双人报告数据服务
 class DualReportService {
@@ -52,7 +101,18 @@ class DualReportService {
     // 获取年度统计数据
     final actualYear = year ?? DateTime.now().year;
     await _reportProgress(onProgress, '统计年度聊天数据', '处理中', 85);
-    final yearlyStats = await _getYearlyStats(friendUsername, actualYear);
+    final yearlyStats =
+        Map<String, dynamic>.from(await _getYearlyStats(friendUsername, actualYear));
+    final topEmoji = await _databaseService.getSessionYearlyTopEmojiMd5(
+      friendUsername,
+      actualYear,
+    );
+    yearlyStats['myTopEmojiMd5'] = topEmoji['myTopEmojiMd5'];
+    yearlyStats['friendTopEmojiMd5'] = topEmoji['friendTopEmojiMd5'];
+    yearlyStats['myTopEmojiUrl'] = topEmoji['myTopEmojiUrl'];
+    yearlyStats['friendTopEmojiUrl'] = topEmoji['friendTopEmojiUrl'];
+    yearlyStats['myEmojiRankings'] = topEmoji['myEmojiRankings'];
+    yearlyStats['friendEmojiRankings'] = topEmoji['friendEmojiRankings'];
     await _reportProgress(onProgress, '统计年度聊天数据', '已完成', 92);
 
     final reportData = {

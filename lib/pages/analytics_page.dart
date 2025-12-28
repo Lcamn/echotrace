@@ -1,7 +1,13 @@
+import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
+import 'dart:isolate';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:cached_network_image/cached_network_image.dart';
+import 'package:http/http.dart' as http;
+import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../providers/app_state.dart';
 import '../services/analytics_service.dart';
@@ -1163,15 +1169,152 @@ class _DualReportSubPageState extends State<_DualReportSubPage> {
   String _currentTaskName = '';
   String _currentTaskStatus = '';
   int _totalProgress = 0;
+  bool _cancelRequested = false;
+
+  Isolate? _reportIsolate;
+  ReceivePort? _reportPort;
+  ReceivePort? _reportExitPort;
+  ReceivePort? _reportErrorPort;
+  StreamSubscription? _reportSubscription;
+  StreamSubscription? _reportExitSubscription;
+  StreamSubscription? _reportErrorSubscription;
+  Completer<Map<String, dynamic>>? _reportCompleter;
 
   @override
   void dispose() {
+    _disposeReportIsolate(canceled: true);
     _stopReportServer();
     super.dispose();
   }
 
+  void _disposeReportIsolate({bool canceled = false}) {
+    if (canceled && _reportCompleter != null && !_reportCompleter!.isCompleted) {
+      _reportCompleter!.completeError(StateError('report canceled'));
+    }
+    _reportSubscription?.cancel();
+    _reportSubscription = null;
+    _reportExitSubscription?.cancel();
+    _reportExitSubscription = null;
+    _reportErrorSubscription?.cancel();
+    _reportErrorSubscription = null;
+    _reportPort?.close();
+    _reportPort = null;
+    _reportExitPort?.close();
+    _reportExitPort = null;
+    _reportErrorPort?.close();
+    _reportErrorPort = null;
+    _reportIsolate?.kill(priority: Isolate.immediate);
+    _reportIsolate = null;
+    _reportCompleter = null;
+  }
+
+  Future<Map<String, dynamic>> _generateReportInIsolate(
+    ContactRanking ranking,
+  ) async {
+    final dbPath = widget.databaseService.dbPath;
+    if (dbPath == null || dbPath.isEmpty) {
+      throw StateError('database path missing');
+    }
+    final appState = context.read<AppState>();
+    final manualWxid = await appState.configService.getManualWxid();
+    await logger.debug(
+      'DualReportPage',
+      'start isolate: friend=${ranking.username} dbPath=$dbPath',
+    );
+
+    _disposeReportIsolate();
+    final receivePort = ReceivePort();
+    final exitPort = ReceivePort();
+    final errorPort = ReceivePort();
+    _reportPort = receivePort;
+    _reportExitPort = exitPort;
+    _reportErrorPort = errorPort;
+    final completer = Completer<Map<String, dynamic>>();
+    _reportCompleter = completer;
+    _reportSubscription = receivePort.listen(
+      (message) {
+        if (message is! Map) return;
+        final type = message['type'];
+        if (type == 'progress') {
+          _updateProgress(
+            message['taskName']?.toString() ?? '',
+            message['status']?.toString() ?? '',
+            (message['progress'] as int?) ?? 0,
+          );
+        } else if (type == 'done') {
+          if (!completer.isCompleted) {
+            completer.complete(
+              (message['data'] as Map?)?.cast<String, dynamic>() ??
+                  <String, dynamic>{},
+            );
+          }
+          _disposeReportIsolate();
+        } else if (type == 'error') {
+          if (!completer.isCompleted) {
+            completer.completeError(
+              StateError(message['message']?.toString() ?? 'unknown error'),
+            );
+          }
+          _disposeReportIsolate();
+        }
+      },
+      onDone: () {
+        if (!completer.isCompleted) {
+          completer.completeError(StateError('report isolate closed'));
+        }
+        _disposeReportIsolate();
+      },
+    );
+    _reportExitSubscription = exitPort.listen((_) {
+      if (!completer.isCompleted) {
+        completer.completeError(StateError('report isolate exited'));
+      }
+      _disposeReportIsolate();
+    });
+    _reportErrorSubscription = errorPort.listen((message) {
+      if (!completer.isCompleted) {
+        completer.completeError(
+          StateError('report isolate error: ${message.toString()}'),
+        );
+      }
+      _disposeReportIsolate();
+    });
+
+    try {
+      _reportIsolate = await Isolate.spawn(
+        dualReportIsolateEntry,
+        {
+          'sendPort': receivePort.sendPort,
+          'dbPath': dbPath,
+          'friendUsername': ranking.username,
+          'filterYear': null,
+          'manualWxid': manualWxid,
+        },
+        onExit: exitPort.sendPort,
+        onError: errorPort.sendPort,
+        debugName: 'dual-report',
+      );
+      await logger.debug(
+        'DualReportPage',
+        'isolate spawned: friend=${ranking.username}',
+      );
+    } catch (e) {
+      if (!completer.isCompleted) {
+        completer.completeError(e);
+      }
+      _disposeReportIsolate();
+    }
+
+    return completer.future;
+  }
+
   Future<void> _generateReportFor(ContactRanking ranking) async {
     if (_isGenerating) return;
+    _cancelRequested = false;
+    await logger.debug(
+      'DualReportPage',
+      'generate start: friend=${ranking.username}',
+    );
     setState(() {
       _isGenerating = true;
       _isHtmlLoading = false;
@@ -1188,25 +1331,76 @@ class _DualReportSubPageState extends State<_DualReportSubPage> {
         ranking.username,
         null,
       );
+      await logger.debug(
+        'DualReportPage',
+        'cache check: friend=${ranking.username} hit=${cached != null}',
+      );
       Map<String, dynamic> reportData;
       if (cached != null) {
         await _updateProgress('检查缓存', '已完成', 100);
         reportData = cached;
       } else {
         await _updateProgress('检查缓存', '已完成', 12);
-        final service = DualReportService(widget.databaseService);
-        reportData = await service.generateDualReport(
-          friendUsername: ranking.username,
-          filterYear: null,
-          onProgress: _updateProgress,
-        );
+        reportData = await _generateReportInIsolate(ranking);
+        final cacheData = _cloneForCache(reportData);
+        _stripEmojiDataUrls(cacheData);
         await DualReportCacheService.saveReport(
           ranking.username,
           null,
-          reportData,
+          cacheData,
         );
       }
 
+      final yearlyStats =
+          (reportData['yearlyStats'] as Map?)?.cast<String, dynamic>() ??
+              <String, dynamic>{};
+      await logger.debug(
+        'DualReportPage',
+        'yearlyStats emoji: my=${yearlyStats['myTopEmojiMd5'] ?? 'null'} '
+            'friend=${yearlyStats['friendTopEmojiMd5'] ?? 'null'} '
+            'myUrl=${yearlyStats['myTopEmojiUrl'] != null} '
+            'friendUrl=${yearlyStats['friendTopEmojiUrl'] != null}',
+      );
+
+      final hasTopEmoji =
+          (yearlyStats['myTopEmojiMd5'] as String?)?.isNotEmpty == true ||
+          (yearlyStats['friendTopEmojiMd5'] as String?)?.isNotEmpty == true;
+      if (!hasTopEmoji) {
+        try {
+          final actualYear =
+              (reportData['year'] as int?) ?? DateTime.now().year;
+          final friendUsername =
+              reportData['friendUsername']?.toString() ?? ranking.username;
+          await logger.debug(
+            'DualReportPage',
+            'top emoji missing, recompute in main isolate: friend=$friendUsername year=$actualYear',
+          );
+          final topEmoji =
+              await widget.databaseService.getSessionYearlyTopEmojiMd5(
+            friendUsername,
+            actualYear,
+          );
+          yearlyStats['myTopEmojiMd5'] = topEmoji['myTopEmojiMd5'];
+          yearlyStats['friendTopEmojiMd5'] = topEmoji['friendTopEmojiMd5'];
+          yearlyStats['myTopEmojiUrl'] = topEmoji['myTopEmojiUrl'];
+          yearlyStats['friendTopEmojiUrl'] = topEmoji['friendTopEmojiUrl'];
+          yearlyStats['myEmojiRankings'] = topEmoji['myEmojiRankings'];
+          yearlyStats['friendEmojiRankings'] = topEmoji['friendEmojiRankings'];
+          reportData['yearlyStats'] = yearlyStats;
+          await logger.debug(
+            'DualReportPage',
+            'top emoji recomputed: my=${yearlyStats['myTopEmojiMd5'] ?? 'null'} '
+                'friend=${yearlyStats['friendTopEmojiMd5'] ?? 'null'}',
+          );
+        } catch (e) {
+          await logger.debug(
+            'DualReportPage',
+            'top emoji recompute failed: $e',
+          );
+        }
+      }
+
+      await _cacheTopEmojiAssets(reportData);
       await _buildReportHtml(reportData);
       await _startReportServer();
       if (!_didAutoOpen) {
@@ -1214,6 +1408,7 @@ class _DualReportSubPageState extends State<_DualReportSubPage> {
         await _openReportInBrowser();
       }
     } catch (e) {
+      if (_cancelRequested) return;
       if (!mounted) return;
       setState(() => _errorMessage = '生成双人报告失败: $e');
     } finally {
@@ -1237,6 +1432,10 @@ class _DualReportSubPageState extends State<_DualReportSubPage> {
       _currentTaskStatus = status;
       _totalProgress = progress;
     });
+    await logger.debug(
+      'DualReportPage',
+      'progress: $taskName - $status ($progress%)',
+    );
   }
 
   Future<void> _buildReportHtml(Map<String, dynamic> reportData) async {
@@ -1244,6 +1443,7 @@ class _DualReportSubPageState extends State<_DualReportSubPage> {
     setState(() => _isHtmlLoading = true);
     try {
       const myName = '我';
+      await logger.debug('DualReportPage', 'build html start');
       final friendName =
           reportData['friendName']?.toString() ??
           _selectedFriend?.displayName ??
@@ -1258,6 +1458,7 @@ class _DualReportSubPageState extends State<_DualReportSubPage> {
         _reportData = reportData;
         _reportHtml = html;
       });
+      await logger.debug('DualReportPage', 'build html done');
     } finally {
       if (mounted) {
         setState(() => _isHtmlLoading = false);
@@ -1313,6 +1514,10 @@ class _DualReportSubPageState extends State<_DualReportSubPage> {
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     _reportServer = server;
     _reportUrl = 'http://127.0.0.1:${server.port}/';
+    await logger.debug(
+      'DualReportPage',
+      'report server started: $_reportUrl',
+    );
     server.listen((request) async {
       if (request.uri.path == '/favicon.ico') {
         request.response.statusCode = HttpStatus.noContent;
@@ -1340,6 +1545,9 @@ class _DualReportSubPageState extends State<_DualReportSubPage> {
   }
 
   void _resetToSelection() {
+    _cancelRequested = true;
+    logger.debug('DualReportPage', 'reset selection');
+    _disposeReportIsolate(canceled: true);
     _stopReportServer();
     setState(() {
       _selectedFriend = null;
@@ -1359,6 +1567,7 @@ class _DualReportSubPageState extends State<_DualReportSubPage> {
         _errorMessage != null ||
         _isGenerating ||
         _isHtmlLoading) {
+      logger.debug('DualReportPage', 'handle back: reset');
       _resetToSelection();
       return;
     }
@@ -1367,6 +1576,218 @@ class _DualReportSubPageState extends State<_DualReportSubPage> {
 
   void handleHeaderBack() {
     _handleBack();
+  }
+
+  
+  Map<String, dynamic> _cloneForCache(Map<String, dynamic> data) {
+    try {
+      return jsonDecode(jsonEncode(data)) as Map<String, dynamic>;
+    } catch (_) {
+      return Map<String, dynamic>.from(data);
+    }
+  }
+
+  void _stripEmojiDataUrls(Map<String, dynamic> reportData) {
+    final yearlyStats =
+        (reportData['yearlyStats'] as Map?)?.cast<String, dynamic>();
+    if (yearlyStats == null || yearlyStats.isEmpty) return;
+    yearlyStats.remove('myTopEmojiDataUrl');
+    yearlyStats.remove('friendTopEmojiDataUrl');
+    reportData['yearlyStats'] = yearlyStats;
+  }
+
+  Future<void> _cacheTopEmojiAssets(Map<String, dynamic> reportData) async {
+    try {
+      final yearlyStats =
+          (reportData['yearlyStats'] as Map?)?.cast<String, dynamic>() ??
+              <String, dynamic>{};
+      if (yearlyStats.isEmpty) return;
+
+      await logger.debug(
+        'DualReportPage',
+        'cache top emoji start: my=${yearlyStats['myTopEmojiMd5'] ?? 'null'} '
+            'friend=${yearlyStats['friendTopEmojiMd5'] ?? 'null'}',
+      );
+
+      final docs = await getApplicationDocumentsDirectory();
+      final emojiDir = Directory(p.join(docs.path, 'EchoTrace', 'Emojis'));
+      if (!await emojiDir.exists()) {
+        await emojiDir.create(recursive: true);
+      }
+
+      final myMd5 = yearlyStats['myTopEmojiMd5'] as String?;
+      final myUrl = yearlyStats['myTopEmojiUrl'] as String?;
+      final friendMd5 = yearlyStats['friendTopEmojiMd5'] as String?;
+      final friendUrl = yearlyStats['friendTopEmojiUrl'] as String?;
+      final hasMy = (myMd5 != null && myMd5.isNotEmpty) ||
+          (myUrl != null && myUrl.isNotEmpty);
+      final hasFriend = (friendMd5 != null && friendMd5.isNotEmpty) ||
+          (friendUrl != null && friendUrl.isNotEmpty);
+      if (!hasMy && !hasFriend) {
+        await logger.debug(
+          'DualReportPage',
+          'top emoji missing in report data, skip cache',
+        );
+        return;
+      }
+
+      final myPath =
+          await _ensureEmojiCached(emojiDir, myMd5, myUrl ?? '');
+      final friendPath =
+          await _ensureEmojiCached(emojiDir, friendMd5, friendUrl ?? '');
+
+      await logger.debug(
+        'DualReportPage',
+        'cache top emoji paths: my=${myPath ?? 'null'} friend=${friendPath ?? 'null'}',
+      );
+
+      final myDataUrl = await _emojiDataUrlFromPath(myPath);
+      final friendDataUrl = await _emojiDataUrlFromPath(friendPath);
+      if (myDataUrl != null) {
+        yearlyStats['myTopEmojiDataUrl'] = myDataUrl;
+      }
+      if (friendDataUrl != null) {
+        yearlyStats['friendTopEmojiDataUrl'] = friendDataUrl;
+      }
+      reportData['yearlyStats'] = yearlyStats;
+    } catch (_) {
+      // 缓存失败不影响报告生成
+    }
+  }
+
+  Future<String?> _ensureEmojiCached(
+    Directory dir,
+    String? md5,
+    String url,
+  ) async {
+    final existing = await _findExistingEmojiCache(dir, md5, url);
+    if (existing != null) return existing;
+    if (url.isEmpty) return null;
+    return _downloadAndCacheEmoji(dir, url, md5);
+  }
+
+  Future<String?> _emojiDataUrlFromPath(String? path) async {
+    if (path == null || path.isEmpty) return null;
+    final file = File(path);
+    if (!await file.exists()) return null;
+    final bytes = await file.readAsBytes();
+    if (bytes.isEmpty) return null;
+    final ext = p.extension(path).toLowerCase();
+    final mime = _emojiMimeFromExtension(ext);
+    if (mime == null) return null;
+    final base64Data = base64Encode(bytes);
+    return 'data:$mime;base64,$base64Data';
+  }
+
+  String? _emojiMimeFromExtension(String ext) {
+    switch (ext) {
+      case '.png':
+        return 'image/png';
+      case '.jpg':
+      case '.jpeg':
+        return 'image/jpeg';
+      case '.webp':
+        return 'image/webp';
+      case '.gif':
+        return 'image/gif';
+      default:
+        return null;
+    }
+  }
+
+  String _emojiCacheKey(String url, String? md5) {
+    if (md5 != null && md5.isNotEmpty) return md5;
+    return url.hashCode.toUnsigned(32).toString();
+  }
+
+  Future<String?> _findExistingEmojiCache(
+    Directory dir,
+    String? md5,
+    String url,
+  ) async {
+    final base = _emojiCacheKey(url, md5);
+    for (final ext in const ['.gif', '.png', '.webp', '.jpg', '.jpeg']) {
+      final candidate = File(p.join(dir.path, '$base$ext'));
+      if (await candidate.exists()) {
+        return candidate.path;
+      }
+    }
+    return null;
+  }
+
+  Future<String?> _downloadAndCacheEmoji(
+    Directory dir,
+    String url,
+    String? md5,
+  ) async {
+    try {
+      final response = await http
+          .get(Uri.parse(url))
+          .timeout(const Duration(seconds: 12));
+      final bytes = response.bodyBytes;
+      if (response.statusCode != 200 || bytes.isEmpty) {
+        return null;
+      }
+
+      final contentType = response.headers['content-type'] ?? '';
+      final sniffedExt = _detectImageExtension(bytes);
+      final ext = sniffedExt ?? _pickEmojiExtension(url, contentType);
+      final base = _emojiCacheKey(url, md5);
+      final outPath = p.join(dir.path, '$base$ext');
+      final file = File(outPath);
+      await file.writeAsBytes(bytes, flush: true);
+      return outPath;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  String _pickEmojiExtension(String url, String contentType) {
+    final uriExt = p.extension(Uri.parse(url).path);
+    if (uriExt.isNotEmpty && uriExt.length <= 5) {
+      return uriExt;
+    }
+    final lower = contentType.toLowerCase();
+    if (lower.contains('png')) return '.png';
+    if (lower.contains('webp')) return '.webp';
+    if (lower.contains('jpeg') || lower.contains('jpg')) return '.jpg';
+    return '.gif';
+  }
+
+  String? _detectImageExtension(List<int> bytes) {
+    if (bytes.length < 12) return null;
+    if (bytes[0] == 0x47 &&
+        bytes[1] == 0x49 &&
+        bytes[2] == 0x46 &&
+        bytes[3] == 0x38 &&
+        (bytes[4] == 0x37 || bytes[4] == 0x39) &&
+        bytes[5] == 0x61) {
+      return '.gif';
+    }
+    if (bytes[0] == 0x89 &&
+        bytes[1] == 0x50 &&
+        bytes[2] == 0x4E &&
+        bytes[3] == 0x47 &&
+        bytes[4] == 0x0D &&
+        bytes[5] == 0x0A &&
+        bytes[6] == 0x1A &&
+        bytes[7] == 0x0A) {
+      return '.png';
+    }
+    if (bytes[0] == 0xFF && bytes[1] == 0xD8 && bytes[2] == 0xFF) {
+      return '.jpg';
+    }
+    if (bytes[0] == 0x52 &&
+        bytes[1] == 0x49 &&
+        bytes[2] == 0x46 &&
+        bytes[3] == 0x46 &&
+        bytes[8] == 0x57 &&
+        bytes[9] == 0x45 &&
+        bytes[10] == 0x42 &&
+        bytes[11] == 0x50) {
+      return '.webp';
+    }
+    return null;
   }
 
   @override
