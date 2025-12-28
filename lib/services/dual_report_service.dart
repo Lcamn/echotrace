@@ -1,9 +1,54 @@
+import 'dart:isolate';
+import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'database_service.dart';
 import '../models/contact_record.dart';
 import '../models/contact.dart';
 
 typedef DualReportProgressCallback =
     Future<void> Function(String taskName, String status, int progress);
+
+@pragma('vm:entry-point')
+void dualReportIsolateEntry(Map<String, dynamic> message) async {
+  final sendPort = message['sendPort'] as SendPort;
+  try {
+    final dbPath = message['dbPath'] as String?;
+    final friendUsername = message['friendUsername'] as String?;
+    final filterYear = message['filterYear'] as int?;
+    final manualWxid = message['manualWxid'] as String?;
+    if (dbPath == null || dbPath.isEmpty || friendUsername == null) {
+      throw StateError('invalid isolate params');
+    }
+
+    final databaseService = DatabaseService();
+    await databaseService.initialize(factory: databaseFactoryFfi);
+    if (manualWxid != null && manualWxid.isNotEmpty) {
+      databaseService.setManualWxid(manualWxid);
+    }
+    await databaseService.connectDecryptedDatabase(
+      dbPath,
+      factory: databaseFactoryFfi,
+    );
+
+    final service = DualReportService(databaseService);
+    final reportData = await service.generateDualReport(
+      friendUsername: friendUsername,
+      filterYear: filterYear,
+      onProgress: (taskName, status, progress) async {
+        sendPort.send({
+          'type': 'progress',
+          'taskName': taskName,
+          'status': status,
+          'progress': progress,
+        });
+      },
+    );
+
+    await databaseService.close();
+    sendPort.send({'type': 'done', 'data': reportData});
+  } catch (e) {
+    sendPort.send({'type': 'error', 'message': e.toString()});
+  }
+}
 
 /// 双人报告数据服务
 class DualReportService {

@@ -1,3 +1,5 @@
+import 'dart:async';
+import 'dart:isolate';
 import 'package:flutter/material.dart';
 import '../services/dual_report_service.dart';
 import '../services/dual_report_cache_service.dart';
@@ -20,6 +22,10 @@ class _DualReportPageState extends State<DualReportPage> {
   String _currentTaskStatus = '';
   int _totalProgress = 0;
   String _friendDisplayName = '好友';
+  Isolate? _reportIsolate;
+  ReceivePort? _reportPort;
+  StreamSubscription? _reportSubscription;
+  Completer<Map<String, dynamic>>? _reportCompleter;
 
   @override
   void initState() {
@@ -28,6 +34,77 @@ class _DualReportPageState extends State<DualReportPage> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _selectFriend();
     });
+  }
+
+  @override
+  void dispose() {
+    _disposeReportIsolate(canceled: true);
+    super.dispose();
+  }
+
+  void _disposeReportIsolate({bool canceled = false}) {
+    if (canceled && _reportCompleter != null && !_reportCompleter!.isCompleted) {
+      _reportCompleter!.completeError(StateError('report canceled'));
+    }
+    _reportSubscription?.cancel();
+    _reportSubscription = null;
+    _reportPort?.close();
+    _reportPort = null;
+    _reportIsolate?.kill(priority: Isolate.immediate);
+    _reportIsolate = null;
+    _reportCompleter = null;
+  }
+
+  Future<Map<String, dynamic>> _generateReportInIsolate({
+    required String dbPath,
+    required String friendUsername,
+    required String? manualWxid,
+  }) async {
+    _disposeReportIsolate();
+    final receivePort = ReceivePort();
+    _reportPort = receivePort;
+    final completer = Completer<Map<String, dynamic>>();
+    _reportCompleter = completer;
+    _reportSubscription = receivePort.listen((message) {
+      if (message is! Map) return;
+      final type = message['type'];
+      if (type == 'progress') {
+        _updateProgress(
+          message['taskName']?.toString() ?? '',
+          message['status']?.toString() ?? '',
+          (message['progress'] as int?) ?? 0,
+        );
+      } else if (type == 'done') {
+        if (!completer.isCompleted) {
+          completer.complete(
+            (message['data'] as Map?)?.cast<String, dynamic>() ??
+                <String, dynamic>{},
+          );
+        }
+        _disposeReportIsolate();
+      } else if (type == 'error') {
+        if (!completer.isCompleted) {
+          completer.completeError(
+            StateError(message['message']?.toString() ?? 'unknown error'),
+          );
+        }
+        _disposeReportIsolate();
+      }
+    });
+
+    _reportIsolate = await Isolate.spawn(
+      dualReportIsolateEntry,
+      {
+        'sendPort': receivePort.sendPort,
+        'dbPath': dbPath,
+        'friendUsername': friendUsername,
+        'filterYear': null,
+        'manualWxid': manualWxid,
+      },
+      debugName: 'dual-report',
+    );
+
+    return completer.future;
   }
 
   Future<void> _selectFriend() async {
@@ -61,10 +138,7 @@ class _DualReportPageState extends State<DualReportPage> {
 
     // 生成完整的双人报告
     if (!mounted) return;
-    await _generateReport(
-      dualReportService: dualReportService,
-      friendUsername: selectedFriend['username'] as String,
-    );
+    await _generateReport(friendUsername: selectedFriend['username'] as String);
   }
 
   Future<void> _updateProgress(
@@ -83,10 +157,7 @@ class _DualReportPageState extends State<DualReportPage> {
     });
   }
 
-  Future<void> _generateReport({
-    required DualReportService dualReportService,
-    required String friendUsername,
-  }) async {
+  Future<void> _generateReport({required String friendUsername}) async {
     try {
       if (mounted) {
         setState(() {
@@ -96,6 +167,13 @@ class _DualReportPageState extends State<DualReportPage> {
           _totalProgress = 0;
         });
       }
+
+      final appState = Provider.of<AppState>(context, listen: false);
+      final dbPath = appState.databaseService.dbPath;
+      if (dbPath == null || dbPath.isEmpty) {
+        throw StateError('database path missing');
+      }
+      final manualWxid = await appState.configService.getManualWxid();
 
       // 首先检查缓存
       await _updateProgress('检查缓存', '处理中', 10);
@@ -119,10 +197,10 @@ class _DualReportPageState extends State<DualReportPage> {
       await _updateProgress('检查缓存', '已完成', 12);
 
       // 生成完整的双人报告数据
-      final reportData = await dualReportService.generateDualReport(
+      final reportData = await _generateReportInIsolate(
+        dbPath: dbPath,
         friendUsername: friendUsername,
-        filterYear: null,
-        onProgress: _updateProgress,
+        manualWxid: manualWxid,
       );
 
       // 保存到缓存
