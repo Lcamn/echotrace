@@ -4,7 +4,6 @@ import 'package:shared_preferences/shared_preferences.dart';
 /// 双人报告缓存服务
 class DualReportCacheService {
   static const String _keyPrefix = 'dual_report_';
-  static const Duration _cacheValidity = Duration(days: 7);
 
   /// 生成缓存键
   static String _getCacheKey(String friendUsername, int? year) {
@@ -22,13 +21,7 @@ class DualReportCacheService {
       final prefs = await SharedPreferences.getInstance();
       final key = _getCacheKey(friendUsername, year);
 
-      // 添加缓存时间戳
-      final cacheData = {
-        ...reportData,
-        '_cachedAt': DateTime.now().toIso8601String(),
-      };
-
-      final jsonString = jsonEncode(cacheData);
+      final jsonString = jsonEncode(reportData);
       await prefs.setString(key, jsonString);
     } catch (e) {}
   }
@@ -50,17 +43,6 @@ class DualReportCacheService {
       final data = jsonDecode(jsonString) as Map<String, dynamic>;
 
       // 检查缓存是否过期
-      final cachedAtStr = data['_cachedAt'] as String?;
-      if (cachedAtStr != null) {
-        final cachedAt = DateTime.parse(cachedAtStr);
-        final age = DateTime.now().difference(cachedAt);
-
-        if (age > _cacheValidity) {
-          await clearReport(friendUsername, year);
-          return null;
-        }
-      }
-
       return data;
     } catch (e) {
       return null;

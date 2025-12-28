@@ -10,6 +10,7 @@ typedef DualReportProgressCallback =
 @pragma('vm:entry-point')
 void dualReportIsolateEntry(Map<String, dynamic> message) async {
   final sendPort = message['sendPort'] as SendPort;
+  DatabaseService? databaseService;
   try {
     final dbPath = message['dbPath'] as String?;
     final friendUsername = message['friendUsername'] as String?;
@@ -19,7 +20,7 @@ void dualReportIsolateEntry(Map<String, dynamic> message) async {
       throw StateError('invalid isolate params');
     }
 
-    final databaseService = DatabaseService();
+    databaseService = DatabaseService();
     await databaseService.initialize(factory: databaseFactoryFfi);
     if (manualWxid != null && manualWxid.isNotEmpty) {
       databaseService.setManualWxid(manualWxid);
@@ -43,10 +44,13 @@ void dualReportIsolateEntry(Map<String, dynamic> message) async {
       },
     );
 
-    await databaseService.close();
     sendPort.send({'type': 'done', 'data': reportData});
   } catch (e) {
     sendPort.send({'type': 'error', 'message': e.toString()});
+  } finally {
+    try {
+      await databaseService?.close();
+    } catch (_) {}
   }
 }
 

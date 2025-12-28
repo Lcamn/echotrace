@@ -1169,7 +1169,11 @@ class _DualReportSubPageState extends State<_DualReportSubPage> {
 
   Isolate? _reportIsolate;
   ReceivePort? _reportPort;
+  ReceivePort? _reportExitPort;
+  ReceivePort? _reportErrorPort;
   StreamSubscription? _reportSubscription;
+  StreamSubscription? _reportExitSubscription;
+  StreamSubscription? _reportErrorSubscription;
   Completer<Map<String, dynamic>>? _reportCompleter;
 
   @override
@@ -1185,8 +1189,16 @@ class _DualReportSubPageState extends State<_DualReportSubPage> {
     }
     _reportSubscription?.cancel();
     _reportSubscription = null;
+    _reportExitSubscription?.cancel();
+    _reportExitSubscription = null;
+    _reportErrorSubscription?.cancel();
+    _reportErrorSubscription = null;
     _reportPort?.close();
     _reportPort = null;
+    _reportExitPort?.close();
+    _reportExitPort = null;
+    _reportErrorPort?.close();
+    _reportErrorPort = null;
     _reportIsolate?.kill(priority: Isolate.immediate);
     _reportIsolate = null;
     _reportCompleter = null;
@@ -1204,34 +1216,60 @@ class _DualReportSubPageState extends State<_DualReportSubPage> {
 
     _disposeReportIsolate();
     final receivePort = ReceivePort();
+    final exitPort = ReceivePort();
+    final errorPort = ReceivePort();
     _reportPort = receivePort;
+    _reportExitPort = exitPort;
+    _reportErrorPort = errorPort;
     final completer = Completer<Map<String, dynamic>>();
     _reportCompleter = completer;
-    _reportSubscription = receivePort.listen((message) {
-      if (message is! Map) return;
-      final type = message['type'];
-      if (type == 'progress') {
-        _updateProgress(
-          message['taskName']?.toString() ?? '',
-          message['status']?.toString() ?? '',
-          (message['progress'] as int?) ?? 0,
-        );
-      } else if (type == 'done') {
-        if (!completer.isCompleted) {
-          completer.complete(
-            (message['data'] as Map?)?.cast<String, dynamic>() ??
-                <String, dynamic>{},
+    _reportSubscription = receivePort.listen(
+      (message) {
+        if (message is! Map) return;
+        final type = message['type'];
+        if (type == 'progress') {
+          _updateProgress(
+            message['taskName']?.toString() ?? '',
+            message['status']?.toString() ?? '',
+            (message['progress'] as int?) ?? 0,
           );
+        } else if (type == 'done') {
+          if (!completer.isCompleted) {
+            completer.complete(
+              (message['data'] as Map?)?.cast<String, dynamic>() ??
+                  <String, dynamic>{},
+            );
+          }
+          _disposeReportIsolate();
+        } else if (type == 'error') {
+          if (!completer.isCompleted) {
+            completer.completeError(
+              StateError(message['message']?.toString() ?? 'unknown error'),
+            );
+          }
+          _disposeReportIsolate();
+        }
+      },
+      onDone: () {
+        if (!completer.isCompleted) {
+          completer.completeError(StateError('report isolate closed'));
         }
         _disposeReportIsolate();
-      } else if (type == 'error') {
-        if (!completer.isCompleted) {
-          completer.completeError(
-            StateError(message['message']?.toString() ?? 'unknown error'),
-          );
-        }
-        _disposeReportIsolate();
+      },
+    );
+    _reportExitSubscription = exitPort.listen((_) {
+      if (!completer.isCompleted) {
+        completer.completeError(StateError('report isolate exited'));
       }
+      _disposeReportIsolate();
+    });
+    _reportErrorSubscription = errorPort.listen((message) {
+      if (!completer.isCompleted) {
+        completer.completeError(
+          StateError('report isolate error: ${message.toString()}'),
+        );
+      }
+      _disposeReportIsolate();
     });
 
     _reportIsolate = await Isolate.spawn(
@@ -1243,6 +1281,8 @@ class _DualReportSubPageState extends State<_DualReportSubPage> {
         'filterYear': null,
         'manualWxid': manualWxid,
       },
+      onExit: exitPort.sendPort,
+      onError: errorPort.sendPort,
       debugName: 'dual-report',
     );
 
