@@ -4781,24 +4781,28 @@ class DatabaseService {
         WHERE md5 IN ($placeholders) OR extern_md5 IN ($placeholders)
       ''';
       final args = [...chunk, ...chunk];
-      final rows = await db.rawQuery(sql, args);
-      for (final row in rows) {
-        final md5 = (row['md5'] as String?) ?? '';
-        final externMd5 = (row['extern_md5'] as String?) ?? '';
-        final url = _firstNonEmptyString([
-          row['cdn_url'],
-          row['tp_url'],
-          row['thumb_url'],
-          row['extern_url'],
-          row['encrypt_url'],
-        ]);
-        if (url.isEmpty) continue;
-        if (md5.isNotEmpty && !result.containsKey(md5)) {
-          result[md5] = url;
+      try {
+        final rows = await db.rawQuery(sql, args);
+        for (final row in rows) {
+          final md5 = (row['md5'] as String?) ?? '';
+          final externMd5 = (row['extern_md5'] as String?) ?? '';
+          final url = _firstNonEmptyString([
+            row['cdn_url'],
+            row['tp_url'],
+            row['thumb_url'],
+            row['extern_url'],
+            row['encrypt_url'],
+          ]);
+          if (url.isEmpty) continue;
+          if (md5.isNotEmpty && !result.containsKey(md5)) {
+            result[md5] = url;
+          }
+          if (externMd5.isNotEmpty && !result.containsKey(externMd5)) {
+            result[externMd5] = url;
+          }
         }
-        if (externMd5.isNotEmpty && !result.containsKey(externMd5)) {
-          result[externMd5] = url;
-        }
+      } catch (_) {
+        // emoticon.db 结构异常时直接跳过
       }
     }
 
