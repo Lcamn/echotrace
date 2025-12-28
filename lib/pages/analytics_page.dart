@@ -1,4 +1,6 @@
+import 'dart:async';
 import 'dart:io';
+import 'dart:isolate';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:cached_network_image/cached_network_image.dart';
@@ -1163,15 +1165,93 @@ class _DualReportSubPageState extends State<_DualReportSubPage> {
   String _currentTaskName = '';
   String _currentTaskStatus = '';
   int _totalProgress = 0;
+  bool _cancelRequested = false;
+
+  Isolate? _reportIsolate;
+  ReceivePort? _reportPort;
+  StreamSubscription? _reportSubscription;
+  Completer<Map<String, dynamic>>? _reportCompleter;
 
   @override
   void dispose() {
+    _disposeReportIsolate(canceled: true);
     _stopReportServer();
     super.dispose();
   }
 
+  void _disposeReportIsolate({bool canceled = false}) {
+    if (canceled && _reportCompleter != null && !_reportCompleter!.isCompleted) {
+      _reportCompleter!.completeError(StateError('report canceled'));
+    }
+    _reportSubscription?.cancel();
+    _reportSubscription = null;
+    _reportPort?.close();
+    _reportPort = null;
+    _reportIsolate?.kill(priority: Isolate.immediate);
+    _reportIsolate = null;
+    _reportCompleter = null;
+  }
+
+  Future<Map<String, dynamic>> _generateReportInIsolate(
+    ContactRanking ranking,
+  ) async {
+    final dbPath = widget.databaseService.dbPath;
+    if (dbPath == null || dbPath.isEmpty) {
+      throw StateError('database path missing');
+    }
+    final appState = context.read<AppState>();
+    final manualWxid = await appState.configService.getManualWxid();
+
+    _disposeReportIsolate();
+    final receivePort = ReceivePort();
+    _reportPort = receivePort;
+    final completer = Completer<Map<String, dynamic>>();
+    _reportCompleter = completer;
+    _reportSubscription = receivePort.listen((message) {
+      if (message is! Map) return;
+      final type = message['type'];
+      if (type == 'progress') {
+        _updateProgress(
+          message['taskName']?.toString() ?? '',
+          message['status']?.toString() ?? '',
+          (message['progress'] as int?) ?? 0,
+        );
+      } else if (type == 'done') {
+        if (!completer.isCompleted) {
+          completer.complete(
+            (message['data'] as Map?)?.cast<String, dynamic>() ??
+                <String, dynamic>{},
+          );
+        }
+        _disposeReportIsolate();
+      } else if (type == 'error') {
+        if (!completer.isCompleted) {
+          completer.completeError(
+            StateError(message['message']?.toString() ?? 'unknown error'),
+          );
+        }
+        _disposeReportIsolate();
+      }
+    });
+
+    _reportIsolate = await Isolate.spawn(
+      dualReportIsolateEntry,
+      {
+        'sendPort': receivePort.sendPort,
+        'dbPath': dbPath,
+        'friendUsername': ranking.username,
+        'filterYear': null,
+        'manualWxid': manualWxid,
+      },
+      debugName: 'dual-report',
+    );
+
+    return completer.future;
+  }
+
   Future<void> _generateReportFor(ContactRanking ranking) async {
     if (_isGenerating) return;
+    _cancelRequested = false;
     setState(() {
       _isGenerating = true;
       _isHtmlLoading = false;
@@ -1194,12 +1274,7 @@ class _DualReportSubPageState extends State<_DualReportSubPage> {
         reportData = cached;
       } else {
         await _updateProgress('检查缓存', '已完成', 12);
-        final service = DualReportService(widget.databaseService);
-        reportData = await service.generateDualReport(
-          friendUsername: ranking.username,
-          filterYear: null,
-          onProgress: _updateProgress,
-        );
+        reportData = await _generateReportInIsolate(ranking);
         await DualReportCacheService.saveReport(
           ranking.username,
           null,
@@ -1214,6 +1289,7 @@ class _DualReportSubPageState extends State<_DualReportSubPage> {
         await _openReportInBrowser();
       }
     } catch (e) {
+      if (_cancelRequested) return;
       if (!mounted) return;
       setState(() => _errorMessage = '生成双人报告失败: $e');
     } finally {
@@ -1340,6 +1416,8 @@ class _DualReportSubPageState extends State<_DualReportSubPage> {
   }
 
   void _resetToSelection() {
+    _cancelRequested = true;
+    _disposeReportIsolate(canceled: true);
     _stopReportServer();
     setState(() {
       _selectedFriend = null;
